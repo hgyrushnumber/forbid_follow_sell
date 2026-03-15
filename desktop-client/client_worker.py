@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""客户端执行器：WebSocket长连接接收任务/执行回传。"""
+"""客户端执行器：HTTP轮询接收任务/执行回传。"""
 
 import json
 import os
@@ -10,21 +10,30 @@ import time
 import uuid
 import urllib.request
 import asyncio
-import websockets
 from task_center import parse_sku_text
 from ozon_core import run_task_with_skus
 
-# 替换为后端WebSocket地址（线上替换为服务器域名）
-SERVER = os.environ.get("DISPATCH_SERVER", "ws://127.0.0.1:18080")
+# 替换为后端HTTP地址（线上替换为服务器域名）
+SERVER = os.environ.get("DISPATCH_SERVER", "http://127.0.0.1:18080")
 CLIENT_ID = os.environ.get("CLIENT_ID", f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}")
 
 def post(path: str, payload: dict):
-    """HTTP POST请求工具（兼容原有REST接口）"""
+    """HTTP POST请求工具"""
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
-        f"http://127.0.0.1:18080{path}",
+        f"{SERVER}{path}",
         data=body,
         method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+def get(path: str):
+    """HTTP GET请求工具"""
+    req = urllib.request.Request(
+        f"{SERVER}{path}",
+        method="GET",
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=20) as r:
@@ -91,40 +100,52 @@ async def process_task(task):
     except Exception as exc:
         post(f"/api/clients/{CLIENT_ID}/tasks/{task_id}/complete", {"success": False, "error": str(exc)})
 
-async def websocket_client():
-    """WebSocket客户端主逻辑"""
-    uri = f"{SERVER}/ws/{CLIENT_ID}"
-    print(f"尝试连接 → {uri}")           # ← 加这行
-    async with websockets.connect(uri) as websocket:
-        print(f"连接成功！ client_id = {CLIENT_ID}")   # ← 加这行
-        # 发送注册信息
-        await websocket.send(json.dumps({
-            "type": "register",
-            "client_id": CLIENT_ID,
-            "accounts": load_accounts()
-        }))
-
-        while True:
-            try:
-                message = await websocket.recv()
-                data = json.loads(message)
-
-                if data["type"] in ("task_assigned", "task_created"):
-                    # 收到任务通知，执行任务（兼容旧事件名）
-                    await process_task(data["task"])
-            except websockets.exceptions.ConnectionClosed:
-                break
-            except Exception as e:
-                print(f"处理任务错误: {e}")
-                await asyncio.sleep(5)
-
 async def main():
-    """主循环，处理重连"""
+    """主循环，处理注册、心跳和拉取任务"""
+    # 加载账号
+    accounts = load_accounts()
+
     while True:
         try:
-            await websocket_client()
+            # 首先注册客户端
+            try:
+                print(f"尝试注册客户端 {CLIENT_ID}")
+                post("/api/clients/register", {"client_id": CLIENT_ID, "accounts": accounts})
+                print("客户端注册成功")
+            except Exception as e:
+                print(f"注册失败: {e}")
+                await asyncio.sleep(5)
+                continue
+
+            # 进入轮询循环
+            while True:
+                try:
+                    # 发送心跳
+                    try:
+                        post("/api/clients/heartbeat", {"client_id": CLIENT_ID, "accounts": accounts})
+                    except Exception as e:
+                        print(f"心跳失败: {e}")
+                        break
+
+                    # 拉取任务
+                    try:
+                        task = get(f"/api/clients/{CLIENT_ID}/task")
+                        if task:
+                            print(f"收到任务: {task['id']}")
+                            await process_task(task)
+                    except Exception as e:
+                        print(f"拉取任务失败: {e}")
+
+                    # 等待一段时间后再次轮询
+                    await asyncio.sleep(10)
+                except Exception as e:
+                    print(f"轮询失败: {e}")
+                    break
+
+            # 如果出现问题，等待后重新注册
+            await asyncio.sleep(5)
         except Exception as e:
-            print(f"连接断开，5秒后重连: {e}")
+            print(f"主循环错误: {e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":

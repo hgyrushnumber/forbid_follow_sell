@@ -6,7 +6,6 @@ export default function ReactApp() {
   const [msg, setMsg] = useState('');
   const [tasks, setTasks] = useState<any[]>([]);
   const [clients, setClients] = useState<any[]>([]);
-  const [ws, setWs] = useState<WebSocket | null>(null);
 
   const refreshData = async () => {
     try {
@@ -22,74 +21,25 @@ export default function ReactApp() {
     try {
       const result = await createTaskBySkuText(skuText);
       setMsg(`任务创建成功: ${result.task_id}`);
-      // 无需手动刷新，WebSocket会自动推送更新
+      // 创建任务后立即刷新数据
+      refreshData();
     } catch (e: any) {
       setMsg(`提交失败: ${e.message}`);
     }
   };
 
   useEffect(() => {
-    let heartbeatInterval: NodeJS.Timeout | null = null;
+    // 初始加载数据
+    refreshData();
 
-    // 初始化WebSocket连接
-    const connectWebSocket = () => {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const clientId = `observer-${Date.now()}`; // 观察端ID
-      const wsUrl = `${protocol}//${window.location.host}/ws/${clientId}`;
-      const websocket = new WebSocket(wsUrl);
-
-      websocket.onopen = () => {
-        console.log("WebSocket连接成功");
-        // 发送注册信息，让服务器识别客户端
-        const registerData = {
-          type: "register_observer"
-        };
-        websocket.send(JSON.stringify(registerData));
-        refreshData();
-
-        // 启动心跳机制，每30秒发送一次心跳
-        heartbeatInterval = setInterval(() => {
-          if (websocket.readyState === WebSocket.OPEN) {
-            websocket.send(JSON.stringify({ type: "heartbeat" }));
-          }
-        }, 30000);
-      };
-
-      websocket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        // 收到任务更新时自动刷新数据
-        if (data.type === "task_created" || data.type === "task_updated" || data.type === "clients_updated" || data.type === "heartbeat") {
-          refreshData();
-        }
-      };
-
-      websocket.onerror = (error) => {
-        console.error("WebSocket错误:", error);
-      };
-
-      websocket.onclose = () => {
-        console.log("WebSocket连接关闭，5秒后重连");
-        // 清除心跳定时器
-        if (heartbeatInterval) {
-          clearInterval(heartbeatInterval);
-        }
-        setTimeout(connectWebSocket, 5000); // 重新连接而不是刷新页面
-      };
-
-      setWs(websocket);
-    };
-
-    connectWebSocket();
+    // 启动定时轮询，每10秒刷新一次数据
+    const interval = setInterval(() => {
+      refreshData();
+    }, 10000);
 
     return () => {
-      // 组件卸载时关闭WebSocket连接
-      if (ws) {
-        ws.close();
-      }
-      // 清除心跳定时器
-      if (heartbeatInterval) {
-        clearInterval(heartbeatInterval);
-      }
+      // 组件卸载时清除定时器
+      clearInterval(interval);
     };
   }, []);
 

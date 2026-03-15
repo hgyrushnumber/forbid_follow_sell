@@ -4,7 +4,7 @@
 import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, List
+from typing import Dict, List, Optional
 from task_center import create_default_center
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,14 @@ class CompleteTaskRequest(BaseModel):
     success: bool
     result: dict = Field(default_factory=dict)
     error: str = ""
+
+class RegisterClientRequest(BaseModel):
+    client_id: str
+    accounts: List[str] = []
+
+class HeartbeatRequest(BaseModel):
+    client_id: str
+    accounts: Optional[List[str]] = None
 
 
 async def _send_json_safe(conn_map: Dict[str, WebSocket], conn_id: str, payload: dict):
@@ -142,6 +150,45 @@ async def complete_task(client_id: str, task_id: str, request: CompleteTaskReque
         # 完成后继续尝试分派下一批
         await _dispatch_pending_tasks()
         return {"ok": True, **action}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# 客户端注册API
+@app.post("/api/clients/register")
+async def register_client(request: RegisterClientRequest):
+    try:
+        result = CENTER.register_client(request.client_id, request.accounts)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# 客户端心跳API
+@app.post("/api/clients/heartbeat")
+async def client_heartbeat(request: HeartbeatRequest):
+    try:
+        result = CENTER.heartbeat(request.client_id, request.accounts)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# 客户端拉取任务API
+@app.get("/api/clients/{client_id}/task")
+async def pull_task_for_client(client_id: str):
+    try:
+        task = CENTER.pull_task_for_client(client_id)
+        return task
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# 客户端离线API
+@app.post("/api/clients/offline")
+async def client_offline(request: dict):
+    try:
+        client_id = request.get("client_id")
+        if not client_id:
+            raise HTTPException(status_code=400, detail="client_id不能为空")
+        CENTER.set_client_offline(client_id)
+        return {"status": "success", "message": f"客户端 {client_id} 已标记为离线"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
