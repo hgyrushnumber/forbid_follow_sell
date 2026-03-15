@@ -109,8 +109,8 @@ async def websocket_client():
                 message = await websocket.recv()
                 data = json.loads(message)
 
-                if data["type"] == "task_created":
-                    # 收到新任务通知，执行任务
+                if data["type"] in ("task_assigned", "task_created"):
+                    # 收到任务通知，执行任务（兼容旧事件名）
                     await process_task(data["task"])
             except websockets.exceptions.ConnectionClosed:
                 break

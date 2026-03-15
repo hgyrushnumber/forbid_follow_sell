@@ -255,7 +255,10 @@ class TaskCenter:
         active = [c for c in self.list_active_clients() if c["client_id"] == client_id and c["alive"]]
         if not active:
             return None
+
         accounts = active[0]["accounts"]
+        if not accounts:
+            return None
 
         with self._connect() as conn:
             row = conn.execute(
@@ -265,31 +268,69 @@ class TaskCenter:
                 return None
 
             task = dict(row)
-            assigned_account = accounts[0] if accounts else None
+            assigned_account = accounts[0]
             ts = now_iso()
             conn.execute(
                 """
                 UPDATE tasks
                 SET assigned_client_id=?, assigned_account=?, status='dispatched', progress=5,
                     message='任务已分派给客户端', picked_at=?, updated_at=?
-                WHERE id=?
+                WHERE id=? AND status='pending' AND assigned_client_id IS NULL
                 """,
                 (client_id, assigned_account, ts, ts, task["id"]),
             )
 
         return self.get_task(task["id"])
 
-    def mark_task_running(self, task_id: str, client_id: str) -> None:
+    def mark_task_running(self, task_id: str, client_id: str) -> Dict[str, Any]:
         ts = now_iso()
         with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, status, assigned_client_id FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("任务不存在")
+
+            task = dict(row)
+            if task.get("assigned_client_id") != client_id:
+                raise ValueError("任务未分配给当前客户端")
+
+            current_status = task.get("status")
+            if current_status in ("success", "failed"):
+                return {"updated": False, "reason": "already_finished"}
+            if current_status == "running":
+                return {"updated": False, "reason": "already_running"}
+            if current_status != "dispatched":
+                raise ValueError(f"任务状态不允许进入running: {current_status}")
+
             conn.execute(
                 "UPDATE tasks SET status='running', progress=20, message='客户端执行中', started_at=?, updated_at=? WHERE id=? AND assigned_client_id=?",
                 (ts, ts, task_id, client_id),
             )
 
-    def complete_task(self, task_id: str, client_id: str, success: bool, result: Optional[Dict[str, Any]] = None, error: str = "") -> None:
+        return {"updated": True, "reason": "ok"}
+
+    def complete_task(self, task_id: str, client_id: str, success: bool, result: Optional[Dict[str, Any]] = None, error: str = "") -> Dict[str, Any]:
         ts = now_iso()
         with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, status, assigned_client_id FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("任务不存在")
+
+            task = dict(row)
+            if task.get("assigned_client_id") != client_id:
+                raise ValueError("任务未分配给当前客户端")
+
+            current_status = task.get("status")
+            if current_status in ("success", "failed"):
+                return {"updated": False, "reason": "already_finished"}
+            if current_status not in ("dispatched", "running"):
+                raise ValueError(f"任务状态不允许完成: {current_status}")
+
             conn.execute(
                 """
                 UPDATE tasks
@@ -307,6 +348,8 @@ class TaskCenter:
                     client_id,
                 ),
             )
+
+        return {"updated": True, "reason": "ok"}
 
 
 def create_default_center() -> TaskCenter:
