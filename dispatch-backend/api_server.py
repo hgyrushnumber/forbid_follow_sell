@@ -4,9 +4,9 @@
 import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, List, Optional
-import json
+from typing import Dict, List
 from task_center import create_default_center
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="Dispatch API")
 
@@ -20,16 +20,72 @@ app.add_middleware(
 )
 
 CENTER = create_default_center()
-# 维护活跃WebSocket连接（生产环境建议用Redis共享连接）
-active_connections: Dict[str, WebSocket] = {}
+# worker websocket 连接
+worker_connections: Dict[str, WebSocket] = {}
+# observer websocket 连接（用于前端看板）
+observer_connections: Dict[str, WebSocket] = {}
 
-# 兼容现有REST API接口
-from pydantic import BaseModel
 
 class CreateTaskRequest(BaseModel):
     sku_text: str = ""
     skus: List[str] = None
     user_id: str = "anonymous"
+
+
+class CompleteTaskRequest(BaseModel):
+    success: bool
+    result: dict = Field(default_factory=dict)
+    error: str = ""
+
+
+async def _send_json_safe(conn_map: Dict[str, WebSocket], conn_id: str, payload: dict):
+    websocket = conn_map.get(conn_id)
+    if not websocket:
+        return False
+    try:
+        await websocket.send_json(payload)
+        return True
+    except Exception:
+        conn_map.pop(conn_id, None)
+        return False
+
+
+async def _broadcast_observers(payload: dict):
+    for observer_id in list(observer_connections.keys()):
+        await _send_json_safe(observer_connections, observer_id, payload)
+
+
+async def _broadcast_clients_updated():
+    await _broadcast_observers({"type": "clients_updated", "items": CENTER.list_active_clients()})
+
+
+async def _dispatch_one_for_worker(client_id: str):
+    task = CENTER.pull_task_for_client(client_id)
+    if not task:
+        return None
+
+    ok = await _send_json_safe(
+        worker_connections,
+        client_id,
+        {
+            "type": "task_assigned",
+            "task": task,
+        },
+    )
+    if not ok:
+        return None
+
+    await _broadcast_observers({"type": "task_updated", "task": task})
+    return task
+
+
+async def _dispatch_pending_tasks():
+    if not worker_connections:
+        return
+    # 为每个在线 worker 尝试派发一个待处理任务
+    for client_id in list(worker_connections.keys()):
+        await _dispatch_one_for_worker(client_id)
+
 
 @app.post("/api/tasks")
 async def create_task(request: CreateTaskRequest):
@@ -37,53 +93,89 @@ async def create_task(request: CreateTaskRequest):
         result = CENTER.create_task(
             sku_text=request.sku_text,
             skus=request.skus,
-            user_id=request.user_id
+            user_id=request.user_id,
         )
-        # 任务创建后主动推送给所有活跃客户端
-        for client_id, websocket in list(active_connections.items()):
-            try:
-                await websocket.send_json({
-                    "type": "task_created",
-                    "task": result
-                })
-            except:
-                # 推送失败则移除无效连接
-                del active_connections[client_id]
+        # 通知观察端有新任务
+        await _broadcast_observers({"type": "task_created", "task": result})
+        # 任务创建后立即尝试按在线 worker 分派
+        await _dispatch_pending_tasks()
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# 其他现有REST接口复用原有逻辑
+
 @app.get("/api/tasks")
 async def list_tasks():
     return {"items": CENTER.list_tasks()}
+
 
 @app.get("/api/clients/active")
 async def list_active_clients():
     return {"items": CENTER.list_active_clients()}
 
-# WebSocket端点（客户端连接）
+
+@app.post("/api/clients/{client_id}/tasks/{task_id}/running")
+async def mark_task_running(client_id: str, task_id: str):
+    try:
+        action = CENTER.mark_task_running(task_id, client_id)
+        task = CENTER.get_task(task_id)
+        if task and action.get("updated"):
+            await _broadcast_observers({"type": "task_updated", "task": task})
+        return {"ok": True, **action}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/clients/{client_id}/tasks/{task_id}/complete")
+async def complete_task(client_id: str, task_id: str, request: CompleteTaskRequest):
+    try:
+        action = CENTER.complete_task(
+            task_id=task_id,
+            client_id=client_id,
+            success=request.success,
+            result=request.result,
+            error=request.error,
+        )
+        task = CENTER.get_task(task_id)
+        if task and action.get("updated"):
+            await _broadcast_observers({"type": "task_updated", "task": task})
+        # 完成后继续尝试分派下一批
+        await _dispatch_pending_tasks()
+        return {"ok": True, **action}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
     await websocket.accept()
-    active_connections[client_id] = websocket
-    connected = True
 
-    # 客户端首次连接时自动注册
-    accounts = []
+    connected = True
+    role = "observer"
+
+    # 首包决定角色（worker 或 observer）
     try:
         data = await websocket.receive_json()
-        if data.get("type") == "register":
+        msg_type = data.get("type")
+        if msg_type == "register":
             accounts = data.get("accounts", [])
             CENTER.register_client(client_id, accounts)
+            worker_connections[client_id] = websocket
+            role = "worker"
+            await _broadcast_clients_updated()
+            await _dispatch_one_for_worker(client_id)
+        else:
+            observer_connections[client_id] = websocket
+            role = "observer"
     except Exception as e:
         print(f"WebSocket注册失败 {client_id}: {e}")
+        observer_connections[client_id] = websocket
+        role = "observer"
 
-    # 保持连接，不阻塞接收（使用定时器发送心跳检测）
     async def send_heartbeat():
         while connected:
             try:
-                await asyncio.sleep(30)  # 每30秒发送一次心跳检测
+                await asyncio.sleep(30)
                 if connected:
                     await websocket.send_json({"type": "heartbeat"})
             except Exception as e:
@@ -94,17 +186,27 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
     try:
         while connected:
-            # 接收消息，保持连接
             try:
                 data = await asyncio.wait_for(websocket.receive_json(), timeout=30)
-                # 处理客户端发送的心跳消息
-                if data.get("type") == "heartbeat":
-                    print(f"收到 {client_id} 的心跳")
+                msg_type = data.get("type")
+
+                if msg_type == "heartbeat" and role == "worker":
                     CENTER.heartbeat(client_id)
-                elif data.get("type") == "register":
-                    # 再次接收注册信息
+                    await _dispatch_one_for_worker(client_id)
+                elif msg_type == "register" and role == "observer":
                     accounts = data.get("accounts", [])
                     CENTER.register_client(client_id, accounts)
+                    observer_connections.pop(client_id, None)
+                    worker_connections[client_id] = websocket
+                    role = "worker"
+                    await _broadcast_clients_updated()
+                    await _dispatch_one_for_worker(client_id)
+                elif msg_type == "register_observer" and role == "worker":
+                    worker_connections.pop(client_id, None)
+                    observer_connections[client_id] = websocket
+                    CENTER.set_client_offline(client_id)
+                    role = "observer"
+                    await _broadcast_clients_updated()
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
@@ -117,9 +219,14 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     finally:
         connected = False
         heartbeat_task.cancel()
-        del active_connections[client_id]
-        CENTER.set_client_offline(client_id)
+        worker_connections.pop(client_id, None)
+        observer_connections.pop(client_id, None)
+        if role == "worker":
+            CENTER.set_client_offline(client_id)
+            await _broadcast_clients_updated()
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="127.0.0.1", port=18080)

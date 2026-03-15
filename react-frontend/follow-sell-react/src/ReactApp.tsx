@@ -34,7 +34,7 @@ export default function ReactApp() {
     // 初始化WebSocket连接
     const connectWebSocket = () => {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const clientId = `web-client-${Date.now()}`; // 生成唯一的客户端ID
+      const clientId = `observer-${Date.now()}`; // 观察端ID
       const wsUrl = `${protocol}//${window.location.host}/ws/${clientId}`;
       const websocket = new WebSocket(wsUrl);
 
@@ -42,8 +42,7 @@ export default function ReactApp() {
         console.log("WebSocket连接成功");
         // 发送注册信息，让服务器识别客户端
         const registerData = {
-          type: "register",
-          accounts: [] // 前端暂时没有配置账号信息，发送空数组
+          type: "register_observer"
         };
         websocket.send(JSON.stringify(registerData));
         refreshData();
@@ -59,7 +58,7 @@ export default function ReactApp() {
       websocket.onmessage = (event) => {
         const data = JSON.parse(event.data);
         // 收到任务更新时自动刷新数据
-        if (data.type === "task_created" || data.type === "task_updated" || data.type === "heartbeat") {
+        if (data.type === "task_created" || data.type === "task_updated" || data.type === "clients_updated" || data.type === "heartbeat") {
           refreshData();
         }
       };
