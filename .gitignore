@@ -1,0 +1,11 @@
+**/*.webm
+**/*.png
+**/*.html
+**/*.exe
+**/dist
+**/build
+**/__pycache__/*
+**/*.zip
+**/*.json
+exeFile/follow_sell_forbid.spec
+exeFile/task_center.db
