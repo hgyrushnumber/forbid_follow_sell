@@ -1,42 +1,144 @@
-#root {
-  max-width: 1280px;
+:root {
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  color: #102a43;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(135deg, #f0f7ff, #f6f5ff);
+}
+
+.page {
+  max-width: 1080px;
   margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  padding: 24px;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
-}
-
+.auth-card,
 .card {
-  padding: 2em;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(49, 130, 206, 0.12);
+  padding: 20px;
 }
 
-.read-the-docs {
-  color: #888;
+.auth-card {
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.subtitle {
+  color: #627d98;
+  margin-top: -8px;
+}
+
+.tab-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+button,
+input,
+textarea {
+  border: 1px solid #d9e2ec;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+textarea,
+input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+button {
+  cursor: pointer;
+  background: #f0f4f8;
+}
+
+button.active,
+button.primary {
+  color: #fff;
+  background: linear-gradient(90deg, #2f80ed, #6a5af9);
+  border: none;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.quota-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #eef4ff;
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+
+.grid {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.message {
+  color: #486581;
+  margin-bottom: 0;
+}
+
+.wechat-box {
+  margin-top: 4px;
+  border: 1px dashed #c3dafe;
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wechat-qr {
+  width: 180px;
+  height: 180px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid #d9e2ec;
+}
+
+ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #334e68;
+}
+
+@media (max-width: 860px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
 }
