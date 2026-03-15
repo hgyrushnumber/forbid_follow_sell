@@ -112,6 +112,22 @@ class TaskCenter:
                 """
             )
 
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    wechat_openid TEXT UNIQUE,
+                    wechat_nickname TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            self._ensure_column(conn, "users", "wechat_openid", "wechat_openid TEXT")
+            self._ensure_column(conn, "users", "wechat_nickname", "wechat_nickname TEXT")
+
     # ---------- task ----------
     def create_task(self, *, sku_text: str = "", skus: Optional[List[str]] = None, user_id: str = "anonymous") -> Dict[str, Any]:
         final_skus = [str(s).strip() for s in (skus or []) if str(s).strip()] or parse_sku_text(sku_text)
@@ -168,6 +184,101 @@ class TaskCenter:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
         return [self._row_to_task(dict(r)) for r in rows]
+
+    def list_tasks_for_user(self, user_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+        return [self._row_to_task(dict(r)) for r in rows]
+
+    def count_user_tasks_for_day(self, user_id: str, day_prefix: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(1) FROM tasks WHERE user_id=? AND created_at LIKE ?",
+                (user_id, f"{day_prefix}%"),
+            ).fetchone()
+        return int(row[0] if row else 0)
+
+    # ---------- user ----------
+    def create_user(self, username: str, password_hash: str) -> Dict[str, Any]:
+        clean_username = username.strip().lower()
+        if not clean_username:
+            raise ValueError("用户名不能为空")
+        ts = now_iso()
+        user_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            existing = conn.execute("SELECT id FROM users WHERE username=?", (clean_username,)).fetchone()
+            if existing:
+                raise ValueError("用户名已存在")
+            conn.execute(
+                "INSERT INTO users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (user_id, clean_username, password_hash, ts, ts),
+            )
+        return {"id": user_id, "username": clean_username}
+
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        clean_username = username.strip().lower()
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE username=?", (clean_username,)).fetchone()
+        return dict(row) if row else None
+
+    def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_user_by_wechat_openid(self, wechat_openid: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE wechat_openid=?", (wechat_openid,)).fetchone()
+        return dict(row) if row else None
+
+    def create_or_update_wechat_user(self, wechat_openid: str, wechat_nickname: str) -> Dict[str, Any]:
+        if not wechat_openid.strip():
+            raise ValueError("wechat_openid 不能为空")
+
+        clean_openid = wechat_openid.strip()
+        nickname = wechat_nickname.strip() or f"wx_{clean_openid[-6:]}"
+        ts = now_iso()
+        existing = self.get_user_by_wechat_openid(clean_openid)
+        if existing:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE users SET wechat_nickname=?, updated_at=? WHERE id=?",
+                    (nickname, ts, existing["id"]),
+                )
+            return {
+                "id": existing["id"],
+                "username": existing["username"],
+                "wechat_openid": clean_openid,
+                "wechat_nickname": nickname,
+            }
+
+        user_id = str(uuid.uuid4())
+        generated_username = f"wx_{clean_openid[-10:]}"
+        password_hash = str(uuid.uuid4())
+        with self._connect() as conn:
+            # 防止用户名冲突
+            cursor = 0
+            candidate = generated_username
+            while conn.execute("SELECT id FROM users WHERE username=?", (candidate,)).fetchone():
+                cursor += 1
+                candidate = f"{generated_username}_{cursor}"
+
+            conn.execute(
+                """
+                INSERT INTO users (id, username, password_hash, wechat_openid, wechat_nickname, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, candidate, password_hash, clean_openid, nickname, ts, ts),
+            )
+        return {
+            "id": user_id,
+            "username": candidate,
+            "wechat_openid": clean_openid,
+            "wechat_nickname": nickname,
+        }
 
     def _row_to_task(self, item: Dict[str, Any]) -> Dict[str, Any]:
         if item.get("sku_payload"):
