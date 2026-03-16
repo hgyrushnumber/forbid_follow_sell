@@ -14,6 +14,10 @@ import tkinter as tk
 import socket
 import time
 import urllib.request
+from dotenv import load_dotenv
+
+# 加载.env配置文件
+load_dotenv()
 
 from dataclasses import dataclass, field
 from datetime import datetime

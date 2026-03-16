@@ -12,3 +12,4 @@ exeFile/task_center.db
 **/*.db
 dispatch-backend/task_center.db
 
+dispatch-backend/.env

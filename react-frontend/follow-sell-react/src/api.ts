@@ -1,4 +1,5 @@
-export const API_BASE = window.location.origin;
+// 开发环境通过Vite代理转发到后端，生产环境应配置为实际后端地址
+export const API_BASE = '';
 
 export type AuthUser = {
   id: string;
@@ -73,15 +74,12 @@ export async function fetchActiveClients() {
   return parseJson(res);
 }
 
-export async function createWechatQrSession(): Promise<{
-  session_id: string;
-  status: string;
-  expires_in: number;
-  login_url: string;
-  qr_image_url: string;
-}> {
+export async function createWechatQrSession(): Promise<{ login_url: string }> {
   const res = await fetch(`${API_BASE}/api/auth/wechat/qr`, {
-    method: 'POST',
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+    },
   });
   return parseJson(res);
 }

@@ -1,11 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   createTaskBySkuText,
   createWechatQrSession,
   fetchActiveClients,
   fetchMe,
   fetchTasks,
-  fetchWechatQrStatus,
   login,
   register,
   type AuthUser,
@@ -28,9 +27,6 @@ export default function ReactApp() {
   const [tasks, setTasks] = useState<any[]>([]);
   const [clients, setClients] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [wechatSessionId, setWechatSessionId] = useState('');
-  const [wechatQrImage, setWechatQrImage] = useState('');
-  const [wechatStatus, setWechatStatus] = useState('未开始');
 
   const remaining = useMemo(() => {
     if (!user) return 0;
@@ -65,38 +61,6 @@ export default function ReactApp() {
     }
   };
 
-  const initWechatLogin = async () => {
-    setLoading(true);
-    setMsg('');
-    try {
-      const qr = await createWechatQrSession();
-      setWechatSessionId(qr.session_id);
-      setWechatQrImage(qr.qr_image_url);
-      setWechatStatus('等待扫码');
-    } catch (e: any) {
-      setMsg(`微信二维码获取失败：${e.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const pollWechatStatus = async (sessionId: string) => {
-    try {
-      const result = await fetchWechatQrStatus(sessionId);
-      if (result.status === 'confirmed' && result.token && result.user) {
-        setToken(result.token);
-        localStorage.setItem(TOKEN_KEY, result.token);
-        await refreshData(result.token);
-        setMsg(`微信登录成功，欢迎 ${result.user.username}`);
-        setWechatStatus('登录成功');
-        return;
-      }
-      setWechatStatus(result.status === 'pending' ? '等待扫码' : result.status);
-    } catch (e: any) {
-      setWechatStatus(`异常：${e.message}`);
-    }
-  };
-
   const submitTask = async () => {
     if (!token) return;
     setLoading(true);
@@ -109,6 +73,18 @@ export default function ReactApp() {
       setMsg(`提交失败: ${e.message}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleWechatLogin = async () => {
+    setLoading(true);
+    try {
+      const response = await createWechatQrSession();
+      window.location.href = response.login_url;
+    } catch (error) {
+      setLoading(false);
+      console.error('微信登录失败:', error);
+      setMsg('微信登录失败');
     }
   };
 
@@ -138,13 +114,6 @@ export default function ReactApp() {
     return () => clearInterval(interval);
   }, [token]);
 
-  useEffect(() => {
-    if (token || !wechatSessionId) return;
-    const timer = setInterval(() => {
-      pollWechatStatus(wechatSessionId);
-    }, 2500);
-    return () => clearInterval(timer);
-  }, [wechatSessionId, token]);
 
   if (!token || !user) {
     return (
@@ -166,14 +135,7 @@ export default function ReactApp() {
           </button>
 
           <div className="wechat-box">
-            <button onClick={initWechatLogin} disabled={loading}>微信扫码登录</button>
-            {wechatQrImage && (
-              <>
-                <img src={wechatQrImage} alt="wechat login qr" className="wechat-qr" />
-                <p className="message">扫码状态：{wechatStatus}</p>
-                <p className="message">请使用已绑定开放平台应用的微信客户端扫码确认。</p>
-              </>
-            )}
+            <button onClick={handleWechatLogin} disabled={loading}>微信扫码登录</button>
           </div>
 
           {msg && <p className="message">{msg}</p>}

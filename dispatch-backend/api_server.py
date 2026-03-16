@@ -7,6 +7,8 @@ import json
 import os
 import secrets
 import uuid
+import base64
+from io import BytesIO
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from urllib.request import urlopen
@@ -14,8 +16,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Head
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, List, Optional
+from dotenv import load_dotenv
+import qrcode
 from task_center import create_default_center
 from pydantic import BaseModel, Field
+
+# 加载.env配置文件
+load_dotenv()
 
 app = FastAPI(title="Dispatch API")
 
@@ -35,8 +42,8 @@ worker_connections: Dict[str, WebSocket] = {}
 observer_connections: Dict[str, WebSocket] = {}
 user_tokens: Dict[str, str] = {}
 
-DAILY_TASK_LIMIT = 20
-WECHAT_LOGIN_EXPIRES_SECONDS = 180
+DAILY_TASK_LIMIT = int(os.getenv("DAILY_TASK_LIMIT", 20))
+WECHAT_LOGIN_EXPIRES_SECONDS = int(os.getenv("WECHAT_LOGIN_EXPIRES_SECONDS", 180))
 wechat_login_sessions: Dict[str, dict] = {}
 
 
@@ -109,9 +116,13 @@ def _create_auth_response(user: dict) -> dict:
 def _build_wechat_login_url(session_id: str) -> str:
     appid = os.getenv("WECHAT_OPEN_APPID", "").strip()
     redirect_uri = os.getenv("WECHAT_OPEN_REDIRECT_URI", "").strip()
+
+    print(f"🔍 构建微信登录URL，appid: {appid}, redirect_uri: {redirect_uri}, session_id: {session_id}")
+
     if not appid or not redirect_uri:
         raise HTTPException(status_code=500, detail="微信开放平台参数未配置：WECHAT_OPEN_APPID / WECHAT_OPEN_REDIRECT_URI")
-    return (
+
+    login_url = (
         "https://open.weixin.qq.com/connect/qrconnect"
         f"?appid={quote(appid, safe='')}"
         f"&redirect_uri={quote(redirect_uri, safe='')}"
@@ -120,6 +131,9 @@ def _build_wechat_login_url(session_id: str) -> str:
         f"&state={quote(session_id, safe='')}"
         "#wechat_redirect"
     )
+
+    print(f"✅ 微信登录URL构建成功: {login_url}")
+    return login_url
 
 
 def _wechat_fetch_json(url: str) -> dict:
@@ -134,6 +148,8 @@ def _wechat_fetch_json(url: str) -> dict:
 def _fetch_wechat_profile(code: str) -> Dict[str, str]:
     appid = os.getenv("WECHAT_OPEN_APPID", "").strip()
     secret = os.getenv("WECHAT_OPEN_APPSECRET", "").strip()
+    print(f"🔍 开始获取微信用户信息，appid: {appid}, code: {code}")
+
     if not appid or not secret:
         raise HTTPException(status_code=500, detail="微信开放平台参数未配置：WECHAT_OPEN_APPID / WECHAT_OPEN_APPSECRET")
 
@@ -141,7 +157,11 @@ def _fetch_wechat_profile(code: str) -> Dict[str, str]:
         "https://api.weixin.qq.com/sns/oauth2/access_token"
         f"?appid={quote(appid, safe='')}&secret={quote(secret, safe='')}&code={quote(code, safe='')}&grant_type=authorization_code"
     )
+
+    print(f"📡 请求微信access_token: {access_url}")
     token_data = _wechat_fetch_json(access_url)
+    print(f"📡 微信access_token响应: {token_data}")
+
     access_token = token_data.get("access_token")
     openid = token_data.get("openid")
     if not access_token or not openid:
@@ -151,9 +171,16 @@ def _fetch_wechat_profile(code: str) -> Dict[str, str]:
         "https://api.weixin.qq.com/sns/userinfo"
         f"?access_token={quote(access_token, safe='')}&openid={quote(openid, safe='')}&lang=zh_CN"
     )
+
+    print(f"📡 请求微信用户信息: {userinfo_url}")
     profile = _wechat_fetch_json(userinfo_url)
+    print(f"📡 微信用户信息响应: {profile}")
+
     nickname = profile.get("nickname") or f"wx_{openid[-6:]}"
-    return {"openid": openid, "nickname": nickname}
+    result = {"openid": openid, "nickname": nickname}
+    print(f"✅ 微信用户信息获取成功: {result}")
+
+    return result
 
 
 def _cleanup_wechat_sessions():
@@ -212,7 +239,7 @@ async def _dispatch_pending_tasks():
         await _dispatch_one_for_worker(client_id)
 
 
-@app.post("/api/tasks")
+@app.post("/tasks")
 async def create_task(request: CreateTaskRequest, authorization: Optional[str] = Header(default=None)):
     try:
         user = _get_current_user(authorization)
@@ -237,13 +264,13 @@ async def create_task(request: CreateTaskRequest, authorization: Optional[str] =
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/api/tasks")
+@app.get("/tasks")
 async def list_tasks(authorization: Optional[str] = Header(default=None)):
     user = _get_current_user(authorization)
     return {"items": CENTER.list_tasks_for_user(user["id"])}
 
 
-@app.post("/api/auth/register")
+@app.post("/auth/register")
 async def register_user(request: AuthRegisterRequest):
     username = request.username.strip().lower()
     if len(username) < 3:
@@ -259,7 +286,7 @@ async def register_user(request: AuthRegisterRequest):
     return _create_auth_response(user)
 
 
-@app.post("/api/auth/login")
+@app.post("/auth/login")
 async def login_user(request: AuthLoginRequest):
     username = request.username.strip().lower()
     user = CENTER.get_user_by_username(username)
@@ -268,7 +295,7 @@ async def login_user(request: AuthLoginRequest):
     return _create_auth_response(user)
 
 
-@app.get("/api/auth/me")
+@app.get("/auth/me")
 async def auth_me(authorization: Optional[str] = Header(default=None)):
     user = _get_current_user(authorization)
     day_prefix = datetime.utcnow().strftime("%Y-%m-%d")
@@ -284,8 +311,10 @@ async def auth_me(authorization: Optional[str] = Header(default=None)):
     }
 
 
-@app.post("/api/auth/wechat/qr")
+@app.get("/auth/wechat/qr")
 async def create_wechat_qr_session():
+    print(f"📋 开始创建微信登录会话")
+
     _cleanup_wechat_sessions()
     session_id = str(uuid.uuid4())
     expires_at = datetime.utcnow() + timedelta(seconds=WECHAT_LOGIN_EXPIRES_SECONDS)
@@ -297,40 +326,50 @@ async def create_wechat_qr_session():
         "nickname": None,
         "auth": None,
     }
-    return {
-        "session_id": session_id,
-        "status": "pending",
-        "expires_in": WECHAT_LOGIN_EXPIRES_SECONDS,
-        "login_url": login_url,
-        "qr_image_url": f"https://api.qrserver.com/v1/create-qr-code/?size=240x240&data={quote(login_url, safe='')}",
-    }
+
+    print(f"✅ 微信登录会话创建成功，session_id: {session_id}, expires_at: {expires_at}")
+
+    # 直接重定向到微信登录页面
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=login_url)
 
 
-@app.get("/api/auth/wechat/status/{session_id}")
+@app.get("/auth/wechat/status/{session_id}")
 async def get_wechat_qr_status(session_id: str):
+    print(f"🔍 检查微信登录状态，session_id: {session_id}")
+
     _cleanup_wechat_sessions()
     session = wechat_login_sessions.get(session_id)
     if not session:
+        print(f"❌ 扫码会话不存在或已过期，session_id: {session_id}")
         raise HTTPException(status_code=404, detail="扫码会话不存在或已过期")
+
+    print(f"📋 会话状态: {session['status']}, 详细信息: {session}")
 
     if session["status"] != "confirmed":
         return {"status": session["status"]}
 
+    print(f"✅ 微信登录成功，返回认证信息: {session['auth']}")
     return {
         "status": "confirmed",
         **session["auth"],
     }
 
 
-@app.get("/api/auth/wechat/callback")
+@app.get("/auth/wechat/callback")
 async def confirm_wechat_login(code: str = "", state: str = ""):
+    print(f"🔍 收到微信登录回调，code: {code}, state: {state}")
+
     if not code or not state:
         raise HTTPException(status_code=400, detail="缺少微信回调参数 code/state")
 
     _cleanup_wechat_sessions()
     session = wechat_login_sessions.get(state)
     if not session:
+        print(f"❌ 扫码会话不存在或已过期，state: {state}")
         raise HTTPException(status_code=404, detail="扫码会话不存在或已过期")
+
+    print(f"📋 找到对应的会话信息: {session}")
 
     profile = _fetch_wechat_profile(code)
     user = CENTER.create_or_update_wechat_user(profile["openid"], profile["nickname"])
@@ -339,6 +378,8 @@ async def confirm_wechat_login(code: str = "", state: str = ""):
     session["wechat_openid"] = profile["openid"]
     session["nickname"] = profile["nickname"]
     session["auth"] = auth
+
+    print(f"✅ 微信登录成功，用户信息: {user}, 会话状态: {session}")
 
     success_redirect = os.getenv("WECHAT_LOGIN_SUCCESS_REDIRECT", "").strip()
     if success_redirect:
@@ -351,12 +392,12 @@ async def confirm_wechat_login(code: str = "", state: str = ""):
     return HTMLResponse(content="<html><body>微信登录成功，你可以关闭此页面并回到业务系统。</body></html>")
 
 
-@app.get("/api/clients/active")
+@app.get("/clients/active")
 async def list_active_clients():
     return {"items": CENTER.list_active_clients()}
 
 
-@app.post("/api/clients/{client_id}/tasks/{task_id}/running")
+@app.post("/clients/{client_id}/tasks/{task_id}/running")
 async def mark_task_running(client_id: str, task_id: str):
     try:
         action = CENTER.mark_task_running(task_id, client_id)
@@ -368,7 +409,7 @@ async def mark_task_running(client_id: str, task_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/api/clients/{client_id}/tasks/{task_id}/complete")
+@app.post("/clients/{client_id}/tasks/{task_id}/complete")
 async def complete_task(client_id: str, task_id: str, request: CompleteTaskRequest):
     try:
         action = CENTER.complete_task(
@@ -388,7 +429,7 @@ async def complete_task(client_id: str, task_id: str, request: CompleteTaskReque
         raise HTTPException(status_code=400, detail=str(e))
 
 # 客户端注册API
-@app.post("/api/clients/register")
+@app.post("/clients/register")
 async def register_client(request: RegisterClientRequest):
     try:
         result = CENTER.register_client(request.client_id, request.accounts)
@@ -397,7 +438,7 @@ async def register_client(request: RegisterClientRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 # 客户端心跳API
-@app.post("/api/clients/heartbeat")
+@app.post("/clients/heartbeat")
 async def client_heartbeat(request: HeartbeatRequest):
     try:
         result = CENTER.heartbeat(request.client_id, request.accounts)
@@ -406,7 +447,7 @@ async def client_heartbeat(request: HeartbeatRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 # 客户端拉取任务API
-@app.get("/api/clients/{client_id}/task")
+@app.get("/clients/{client_id}/task")
 async def pull_task_for_client(client_id: str):
     try:
         task = CENTER.pull_task_for_client(client_id)
@@ -415,7 +456,7 @@ async def pull_task_for_client(client_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 # 客户端离线API
-@app.post("/api/clients/offline")
+@app.post("/clients/offline")
 async def client_offline(request: dict):
     try:
         client_id = request.get("client_id")
@@ -509,5 +550,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
 if __name__ == "__main__":
     import uvicorn
+    import os
 
-    uvicorn.run(app, host="127.0.0.1", port=18080)
+    port = int(os.getenv("PORT", 18080))
+    host = os.getenv("HOST", "127.0.0.1")
+
+    print(f"🚀 启动Dispatch API服务器，监听地址: {host}:{port}")
+    uvicorn.run(app, host=host, port=port)
