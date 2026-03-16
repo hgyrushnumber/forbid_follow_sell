@@ -21,23 +21,9 @@ async function parseJson(res: Response) {
   return res.json();
 }
 
-export async function register(username: string, password: string): Promise<{ token: string; user: AuthUser }> {
-  const res = await fetch(`${API_BASE}/api/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
-  return parseJson(res);
-}
+export type AuthResult = { token: string; expires_in: number; expires_at: string; user: AuthUser };
 
-export async function login(username: string, password: string): Promise<{ token: string; user: AuthUser }> {
-  const res = await fetch(`${API_BASE}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
-  return parseJson(res);
-}
+
 
 export async function fetchMe(token: string): Promise<{ user: AuthUser }> {
   const res = await fetch(`${API_BASE}/api/auth/me`, {
@@ -74,7 +60,7 @@ export async function fetchActiveClients() {
   return parseJson(res);
 }
 
-export async function createWechatQrSession(): Promise<{ login_url: string }> {
+export async function createWechatQrSession(): Promise<{ session_id: string; login_url: string; expires_in: number }> {
   const res = await fetch(`${API_BASE}/api/auth/wechat/qr`, {
     method: 'GET',
     headers: {
@@ -84,7 +70,7 @@ export async function createWechatQrSession(): Promise<{ login_url: string }> {
   return parseJson(res);
 }
 
-export async function fetchWechatQrStatus(sessionId: string): Promise<{ status: string; token?: string; user?: AuthUser }> {
+export async function fetchWechatQrStatus(sessionId: string): Promise<{ status: string; token?: string; expires_in?: number; expires_at?: string; user?: AuthUser }> {
   const res = await fetch(`${API_BASE}/api/auth/wechat/status/${sessionId}`);
   return parseJson(res);
 }
