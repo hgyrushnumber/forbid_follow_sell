@@ -5,21 +5,46 @@ import {
   fetchActiveClients,
   fetchMe,
   fetchTasks,
-  login,
-  register,
+  fetchWechatQrStatus,
   type AuthUser,
+  type AuthResult,
 } from './api';
 import './App.css';
 
-type Mode = 'login' | 'register';
-
 const TOKEN_KEY = 'follow_sell_token';
 
+type StoredAuthToken = {
+  token: string;
+  expiresAt: string;
+};
+
+function readStoredToken(): string {
+  const raw = localStorage.getItem(TOKEN_KEY);
+  if (!raw) return '';
+  try {
+    const parsed = JSON.parse(raw) as StoredAuthToken;
+    if (!parsed?.token || !parsed?.expiresAt) {
+      localStorage.removeItem(TOKEN_KEY);
+      return '';
+    }
+    if (new Date(parsed.expiresAt).getTime() <= Date.now()) {
+      localStorage.removeItem(TOKEN_KEY);
+      return '';
+    }
+    return parsed.token;
+  } catch {
+    localStorage.removeItem(TOKEN_KEY);
+    return '';
+  }
+}
+
+function saveStoredToken(auth: AuthResult) {
+  const payload: StoredAuthToken = { token: auth.token, expiresAt: auth.expires_at };
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(payload));
+}
+
 export default function ReactApp() {
-  const [mode, setMode] = useState<Mode>('login');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [token, setToken] = useState<string>(() => localStorage.getItem(TOKEN_KEY) || '');
+  const [token, setToken] = useState<string>(() => readStoredToken());
 
   const [user, setUser] = useState<AuthUser | null>(null);
   const [skuText, setSkuText] = useState('');
@@ -44,23 +69,6 @@ export default function ReactApp() {
     setUser(meRes.user || null);
   };
 
-  const onAuth = async () => {
-    setLoading(true);
-    setMsg('');
-    try {
-      const action = mode === 'login' ? login : register;
-      const result = await action(username.trim(), password);
-      setToken(result.token);
-      localStorage.setItem(TOKEN_KEY, result.token);
-      await refreshData(result.token);
-      setMsg(`${mode === 'login' ? '登录' : '注册'}成功，欢迎 ${result.user.username}`);
-    } catch (e: any) {
-      setMsg(`认证失败：${e.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const submitTask = async () => {
     if (!token) return;
     setLoading(true);
@@ -76,17 +84,70 @@ export default function ReactApp() {
     }
   };
 
+  const pollWechatLogin = async (sessionId: string) => {
+    const maxAttempts = 30;
+    let attempts = 0;
+    while (attempts < maxAttempts) {
+      let result;
+      try {
+        result = await fetchWechatQrStatus(sessionId);
+      } catch (error: any) {
+        setMsg(`微信登录状态查询失败：${error?.message || '未知错误'}`);
+        return false;
+      }
+      if (result.status === 'confirmed' && result.token && result.user) {
+        setToken(result.token);
+        saveStoredToken({ token: result.token, expires_in: result.expires_in || 0, expires_at: result.expires_at || new Date(Date.now() + 60000).toISOString(), user: result.user });
+        await refreshData(result.token);
+        setMsg(`登录成功，欢迎 ${result.user.username}（令牌有效期 ${Math.max(Math.floor((new Date((result.expires_at || new Date().toISOString())).getTime() - Date.now()) / 60000), 0)} 分钟）`);
+        return true;
+      }
+      if (result.status !== 'pending') {
+        setMsg('微信登录状态异常，请重试');
+        return false;
+      }
+      attempts += 1;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    setMsg('微信登录超时，请重试');
+    return false;
+  };
+
   const handleWechatLogin = async () => {
     setLoading(true);
+    setMsg('');
     try {
       const response = await createWechatQrSession();
-      window.location.href = response.login_url;
-    } catch (error) {
-      setLoading(false);
+      const popup = window.open(response.login_url, '_blank', 'width=540,height=680');
+      if (!popup) {
+        setMsg('浏览器阻止了弹窗，请允许后重试');
+        return;
+      }
+      await pollWechatLogin(response.session_id);
+    } catch (error: any) {
       console.error('微信登录失败:', error);
-      setMsg('微信登录失败');
+      setMsg(`微信登录失败：${error?.message || '未知错误'}`);
+    } finally {
+      setLoading(false);
     }
   };
+
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get('wechat_session_id');
+    if (!sessionId || token) return;
+
+    setLoading(true);
+    pollWechatLogin(sessionId)
+      .finally(() => {
+        setLoading(false);
+        params.delete('wechat_session_id');
+        const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}${window.location.hash}`;
+        window.history.replaceState({}, '', next);
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   const logout = () => {
     localStorage.removeItem(TOKEN_KEY);
@@ -120,22 +181,12 @@ export default function ReactApp() {
       <div className="page auth-page">
         <div className="auth-card">
           <h1>跟卖任务系统</h1>
-          <p className="subtitle">请先登录或注册，再开始每日任务。</p>
-
-          <div className="tab-row">
-            <button className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>登录</button>
-            <button className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')}>注册</button>
-          </div>
-
-          <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="用户名（>=3位）" />
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="密码（>=6位）" />
-
-          <button className="primary" onClick={onAuth} disabled={loading}>
-            {loading ? '处理中...' : mode === 'login' ? '登录' : '创建账号'}
-          </button>
+          <p className="subtitle">系统仅支持微信扫码登录。</p>
 
           <div className="wechat-box">
-            <button onClick={handleWechatLogin} disabled={loading}>微信扫码登录</button>
+            <button className="primary" onClick={handleWechatLogin} disabled={loading}>
+              {loading ? '处理中...' : '微信扫码登录'}
+            </button>
           </div>
 
           {msg && <p className="message">{msg}</p>}
