@@ -8,7 +8,6 @@
 import os
 import threading
 import tkinter as tk
-import socket
 
 from typing import List, Optional
 
@@ -20,6 +19,7 @@ from services.dispatch_service import DispatchService
 from services.task_service import TaskService
 from services.account_service import AccountService
 from services.mail_service import get_latest_mail_id as _get_latest_mail_id
+from services.client_identity import resolve_client_id
 from ui.main_window import MainWindow
 from ozon_core import close_all_sessions, set_logger
 
@@ -40,7 +40,7 @@ class OzonMultiApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.accounts: List[AccountInfo] = []
-        self.client_id = f"{socket.gethostname()}-{os.getpid()}"
+        self.client_id = resolve_client_id()
         self._heartbeat_stop = threading.Event()
 
         self.config_service = ConfigService()
@@ -235,7 +235,7 @@ class OzonMultiApp:
 def main() -> None:
     print("=== Ozon SKU 上传工具 启动 ===")
     print(f"分派服务器地址: {DISPATCH_SERVER}")
-    print(f"客户端ID: {socket.gethostname()}-{os.getpid()}")
+    print(f"客户端ID: {resolve_client_id()}")
 
     os.makedirs("accounts", exist_ok=True)
 
