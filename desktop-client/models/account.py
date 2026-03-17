@@ -12,13 +12,13 @@ DEFAULT_STORAGE_DIR = "accounts"
 class AccountInfo:
     """
     通用账号模型。
-    同时兼容原 app.py 和 ozon_core.py 的账号字段。
+    现策略：统一使用“手动输入验证码”登录，不再依赖 IMAP。
     """
 
     email: str
     imap_password: str = ""
     storage_path: Optional[str] = None
-    use_manual_login: bool = False
+    use_manual_login: bool = True
 
     # UI / 运行时状态
     is_selected: bool = False
@@ -31,6 +31,8 @@ class AccountInfo:
     def __post_init__(self) -> None:
         if self.storage_path is None:
             self.storage_path = self.build_storage_path(self.email)
+        # 强制收敛到手动验证码模式
+        self.use_manual_login = True
 
     @staticmethod
     def build_storage_path(email: str) -> str:
@@ -38,14 +40,8 @@ class AccountInfo:
         return os.path.join(DEFAULT_STORAGE_DIR, f"ozon_auth_{safe_email}.json")
 
     def validate(self) -> bool:
-        """
-        验证账号信息是否完整。
-        手动验证码模式只要求 email；
-        IMAP 模式要求 email + imap_password。
-        """
-        if self.use_manual_login:
-            return bool(self.email.strip())
-        return bool(self.email.strip() and self.imap_password.strip())
+        """统一规则：仅校验邮箱。"""
+        return bool(self.email.strip())
 
     def is_logged_in(self) -> bool:
         return self.login_status == "已登录"
@@ -81,9 +77,9 @@ class AccountInfo:
         """
         return {
             "email": self.email,
-            "imap_password": self.imap_password,
+            "imap_password": "",  # 历史字段保留，但不再使用
             "storage_path": self.storage_path,
-            "use_manual_login": self.use_manual_login,
+            "use_manual_login": True,
             "is_selected": self.is_selected,
             "login_status": self.login_status,
             "task_status": self.task_status,
@@ -96,9 +92,9 @@ class AccountInfo:
     def from_dict(cls, data: dict) -> "AccountInfo":
         return cls(
             email=data.get("email", ""),
-            imap_password=data.get("imap_password", ""),
+            imap_password="",
             storage_path=data.get("storage_path"),
-            use_manual_login=data.get("use_manual_login", False),
+            use_manual_login=True,
             is_selected=data.get("is_selected", False),
             login_status=data.get("login_status", "未登录"),
             task_status=data.get("task_status", "空闲"),
