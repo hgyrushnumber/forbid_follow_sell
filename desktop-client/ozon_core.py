@@ -28,6 +28,7 @@ from services.utils import ensure_dirs, log, sleep, set_logger
 from services.session_service import SessionService
 from services.page_service import PageService
 from services.sku_service import SkuService
+from services.page_state_detector import detect_page_type as _detect_page_type, is_messenger_page as _is_messenger_page
 
 
 
@@ -350,91 +351,12 @@ def click_menu_button(page, text: str, ru_text: Optional[str] = None, max_retrie
 # 页面类型识别
 # =========================
 def detect_page_type(page):
-    """
-    返回:
-    - blocked
-    - login
-    - ozon_id_phone
-    - otp
-    - company_select
-    - messenger
-    - dashboard
-    - unknown
-    """
-    body_text = safe_body_text(page, timeout=5000)
-
-    blocked_signs = [
-        "Доступ ограничен",
-        "Обновить",
-        "Служба поддержки",
-        "Antibot Challenge Page",
-        "访问受限",
-    ]
-    if sum(sign in body_text for sign in blocked_signs) >= 2:
-        return "blocked"
-
-    if (
-        ("Введите номер телефона" in body_text and "Войти по почте" in body_text)
-        or ("输入电话号码" in body_text and "使用邮箱登录" in body_text)
-    ):
-        return "ozon_id_phone"
-
-    otp_signs_ru = [
-        "Введите код",
-        "Отправили код на почту",
-        "Получить новый код",
-        "Не могу войти",
-    ]
-    otp_signs_cn = [
-        "输入验证码",
-        "验证码",
-        "重新获取",
-    ]
-    if sum(sign in body_text for sign in otp_signs_ru) >= 2 or sum(sign in body_text for sign in otp_signs_cn) >= 2:
-        return "otp"
-
-    company_cn = "请选择公司" in body_text and "下一步" in body_text
-    company_ru = "Выберите компанию" in body_text and "Далее" in body_text
-    if company_cn or company_ru:
-        return "company_select"
-
-    try:
-        url = page.url or ""
-    except Exception:
-        url = ""
-
-    if "/app/messenger" in url:
-        return "messenger"
-
-    if "dashboard" in url or "/app/dashboard" in url:
-        return "dashboard"
-
-    login_signs = [
-        "Вход и регистрация",
-        "Войти",
-        "Зарегистрироваться",
-        "登录",
-        "注册",
-    ]
-    if sum(sign in body_text for sign in login_signs) >= 2:
-        return "login"
-
-    return "unknown"
+    """统一委托给页面状态识别器。"""
+    return _detect_page_type(page)
 
 
 def is_messenger_page(page) -> bool:
-    if detect_page_type(page) == "messenger":
-        return True
-
-    body = safe_body_text(page, timeout=2000)
-    markers = [
-        "商品和价格",
-        "质量监督",
-        "卖家使用我的品牌",
-        "Товары и цены",
-        "Контроль качества",
-    ]
-    return any(m in body for m in markers)
+    return _is_messenger_page(page)
 
 
 def is_company_select_page(page) -> bool:
@@ -954,51 +876,20 @@ def login_with_email_otp(page, context, account: OzonAccount):
         dump_page_state(page, "error_otp_input_not_found")
         return False
 
-    # 根据账号配置决定是否使用IMAP获取验证码
-    if hasattr(account, 'use_manual_login') and account.use_manual_login:
-        log("✅ 账号配置为手动输入验证码，跳过IMAP获取")
-        otp_result = None
-    else:
-        log("✅ 账号配置为使用IMAP获取验证码")
-        otp_result = get_otp_from_email(
-            request_time=request_time,
-            min_mail_id=baseline_mail_id,
-            max_wait_seconds=60,
-            email_account=account.email,
-            email_password=account.imap_password
-        )
+    # 强制采用手动输入验证码（不再尝试 IMAP 自动提取）
+    import tkinter as tk
+    from tkinter import simpledialog
 
-    if not otp_result:
-        log("❌ 验证码提取失败，尝试手动输入")
-        dump_page_state(page, "error_otp_fetch_failed")
+    root = tk.Tk()
+    root.withdraw()
+    otp = simpledialog.askstring("验证码输入", "请输入收到的验证码:", parent=root)
+    root.destroy()
 
-        # 尝试手动输入验证码
-        import tkinter as tk
-        from tkinter import simpledialog
+    if not otp:
+        log("❌ 用户未输入验证码")
+        return False
 
-        root = tk.Tk()
-        root.withdraw()  # 隐藏主窗口
-
-        # 提示用户手动输入验证码
-        otp = simpledialog.askstring("验证码输入", "请输入收到的验证码:", parent=root)
-
-        if not otp:
-            log("❌ 用户未输入验证码")
-            return False
-
-        # 创建一个模拟的otp_result
-        otp_result = {
-            "otp": otp,
-            "mail_id": None,
-            "email_dt": None,
-            "subject": "手动输入",
-            "from_addr": "manual"
-        }
-
-    otp = otp_result["otp"]
-    log(f"本次使用的验证码: {otp}")
-    log(f"本次使用的邮件 ID: {otp_result['mail_id']}")
-    log(f"本次使用的邮件时间: {otp_result['email_dt']}")
+    log("✅ 已接收手动输入验证码")
 
     try:
         log(f"正在填入验证码: {otp}")

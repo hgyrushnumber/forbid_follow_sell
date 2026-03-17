@@ -5,6 +5,7 @@ import time
 from typing import List, Optional
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from services.utils import safe_body_text, log, sleep, escape_xpath_text, build_text_xpaths, find_visible_by_xpaths
+from services.page_state_detector import detect_page_type as _detect_page_type, is_messenger_page as _is_messenger_page
 
 
 class PageService:
@@ -12,90 +13,11 @@ class PageService:
         self._logger = logger_func
 
     def detect_page_type(self, page):
-        """
-        返回:
-        - blocked
-        - login
-        - ozon_id_phone
-        - otp
-        - company_select
-        - messenger
-        - dashboard
-        - unknown
-        """
-        body_text = safe_body_text(page, timeout=5000)
-
-        blocked_signs = [
-            "Доступ ограничен",
-            "Обновить",
-            "Служба поддержки",
-            "Antibot Challenge Page",
-            "访问受限",
-        ]
-        if sum(sign in body_text for sign in blocked_signs) >= 2:
-            return "blocked"
-
-        if (
-            ("Введите номер телефона" in body_text and "Войти по почте" in body_text)
-            or ("输入电话号码" in body_text and "使用邮箱登录" in body_text)
-        ):
-            return "ozon_id_phone"
-
-        otp_signs_ru = [
-            "Введите код",
-            "Отправили код на почту",
-            "Получить новый код",
-            "Не могу войти",
-        ]
-        otp_signs_cn = [
-            "输入验证码",
-            "验证码",
-            "重新获取",
-        ]
-        if sum(sign in body_text for sign in otp_signs_ru) >= 2 or sum(sign in body_text for sign in otp_signs_cn) >= 2:
-            return "otp"
-
-        company_cn = "请选择公司" in body_text and "下一步" in body_text
-        company_ru = "Выберите компанию" in body_text and "Далее" in body_text
-        if company_cn or company_ru:
-            return "company_select"
-
-        try:
-            url = page.url or ""
-        except Exception:
-            url = ""
-
-        if "/app/messenger" in url:
-            return "messenger"
-
-        if "dashboard" in url or "/app/dashboard" in url:
-            return "dashboard"
-
-        login_signs = [
-            "Вход и регистрация",
-            "Войти",
-            "Зарегистрироваться",
-            "登录",
-            "注册",
-        ]
-        if sum(sign in body_text for sign in login_signs) >= 2:
-            return "login"
-
-        return "unknown"
+        """统一委托给页面状态识别器。"""
+        return _detect_page_type(page)
 
     def is_messenger_page(self, page) -> bool:
-        if self.detect_page_type(page) == "messenger":
-            return True
-
-        body = safe_body_text(page, timeout=2000)
-        markers = [
-            "商品和价格",
-            "质量监督",
-            "卖家使用我的品牌",
-            "Товары и цены",
-            "Контроль качества",
-        ]
-        return any(m in body for m in markers)
+        return _is_messenger_page(page)
 
     def is_company_select_page(self, page) -> bool:
         return self.detect_page_type(page) == "company_select"
@@ -469,7 +391,7 @@ class PageService:
             return "otp_still_here"
         return final_type
 
-    def login_with_email_otp(self, page, context, account, get_otp_from_email, TARGET_URL):
+    def login_with_email_otp(self, page, context, account, TARGET_URL):
         self._logger(f"开始邮箱验证码登录流程: {account.email}")
 
         current_type = self.detect_page_type(page)
@@ -491,14 +413,11 @@ class PageService:
                 from services.utils import dump_page_state
                 dump_page_state(page, "before_click_login")
 
-                # 支持点击中文或俄文的登录按钮
                 login_btn = None
                 try:
-                    # 先尝试查找俄文按钮 "Войти"
                     login_btn = page.get_by_text("Войти", exact=True).first
                     login_btn.wait_for(state="visible", timeout=5000)
-                except:
-                    # 如果俄文按钮未找到，尝试查找中文按钮 "登录"
+                except Exception:
                     login_btn = page.get_by_text("登录", exact=True).first
                     login_btn.wait_for(state="visible", timeout=5000)
 
@@ -506,7 +425,6 @@ class PageService:
                 page.wait_for_load_state("networkidle", timeout=20000)
                 self._logger("✅ 已点击登录按钮")
 
-                from services.utils import dump_page_state
                 dump_page_state(page, "after_click_login")
             except Exception as e:
                 self._logger(f"⚠️ 点击登录按钮失败: {e}")
@@ -522,14 +440,11 @@ class PageService:
                 from services.utils import dump_page_state
                 dump_page_state(page, "before_click_email_login")
 
-                # 支持点击中文或俄文的邮箱登录按钮
                 email_login_btn = None
                 try:
-                    # 先尝试查找俄文按钮 "Войти по почте"
                     email_login_btn = page.get_by_text("Войти по почте", exact=True).first
                     email_login_btn.wait_for(state="visible", timeout=5000)
-                except:
-                    # 如果俄文按钮未找到，尝试查找中文按钮 "邮箱登录"
+                except Exception:
                     email_login_btn = page.get_by_text("使用邮箱登录", exact=True).first
                     email_login_btn.wait_for(state="visible", timeout=5000)
 
@@ -537,7 +452,6 @@ class PageService:
                 page.wait_for_load_state("networkidle", timeout=15000)
                 self._logger("✅ 已点击“通过邮箱登录”")
 
-                from services.utils import dump_page_state
                 dump_page_state(page, "after_click_email_login")
             except Exception as e:
                 self._logger(f"⚠️ 点击“通过邮箱登录”失败: {e}")
@@ -563,17 +477,11 @@ class PageService:
             return False
 
         if self.detect_page_type(page) != "otp":
-            baseline_mail_id = get_latest_ozon_mail_id()
-            self._logger(f"提交前基线邮件 ID: {baseline_mail_id}")
-
             try:
                 page.fill("input[type='email']", account.email)
-                request_time = datetime.now(timezone.utc)
-
                 submit_btn = page.locator("button[type='submit']").first
                 submit_btn.click()
                 self._logger("✅ 已提交邮箱")
-                self._logger(f"验证码请求时间(UTC): {request_time.isoformat()}")
 
                 from services.utils import dump_page_state
                 dump_page_state(page, "after_submit_email")
@@ -582,13 +490,9 @@ class PageService:
                 from services.utils import dump_page_state
                 dump_page_state(page, "error_submit_email")
                 return False
-        else:
-            baseline_mail_id = get_latest_ozon_mail_id()
-            request_time = datetime.now(timezone.utc)
 
         try:
             self._logger("已提交邮箱，等待验证码输入框...")
-
             otp_kind, otp_input = self.wait_for_otp_input(page, timeout_ms=30000)
 
             if otp_kind == "page_changed":
@@ -608,7 +512,6 @@ class PageService:
             self.log_input_candidates(page, "OTP_INPUT_FOUND")
             from services.utils import dump_page_state
             dump_page_state(page, "otp_input_visible")
-
         except Exception as e:
             self._logger(f"⚠️ 未出现验证码输入框: {e}")
             self.log_input_candidates(page, "OTP_INPUT_WAIT_EXCEPTION")
@@ -616,56 +519,23 @@ class PageService:
             dump_page_state(page, "error_otp_input_not_found")
             return False
 
-        # 根据账号配置决定是否使用IMAP获取验证码
-        if hasattr(account, 'use_manual_login') and account.use_manual_login:
-            self._logger("✅ 账号配置为手动输入验证码，跳过IMAP获取")
-            otp_result = None
-        else:
-            self._logger("✅ 账号配置为使用IMAP获取验证码")
-            otp_result = get_otp_from_email(
-                request_time=request_time,
-                min_mail_id=baseline_mail_id,
-                max_wait_seconds=60,
-                email_account=account.email,
-                email_password=account.imap_password
-            )
+        # 强制采用手动输入验证码
+        import tkinter as tk
+        from tkinter import simpledialog
 
-        if not otp_result:
-            self._logger("❌ 验证码提取失败，尝试手动输入")
-            from services.utils import dump_page_state
-            dump_page_state(page, "error_otp_fetch_failed")
+        root = tk.Tk()
+        root.withdraw()
+        otp = simpledialog.askstring("验证码输入", "请输入邮箱中收到的验证码:", parent=root)
+        root.destroy()
 
-            # 尝试手动输入验证码
-            import tkinter as tk
-            from tkinter import simpledialog
+        if not otp:
+            self._logger("❌ 用户未输入验证码")
+            return False
 
-            root = tk.Tk()
-            root.withdraw()  # 隐藏主窗口
-
-            # 提示用户手动输入验证码
-            otp = simpledialog.askstring("验证码输入", "请输入收到的验证码:", parent=root)
-
-            if not otp:
-                self._logger("❌ 用户未输入验证码")
-                return False
-
-            # 创建一个模拟的otp_result
-            otp_result = {
-                "otp": otp,
-                "mail_id": None,
-                "email_dt": None,
-                "subject": "手动输入",
-                "from_addr": "manual"
-            }
-
-        otp = otp_result["otp"]
-        self._logger(f"本次使用的验证码: {otp}")
-        self._logger(f"本次使用的邮件 ID: {otp_result['mail_id']}")
-        self._logger(f"本次使用的邮件时间: {otp_result['email_dt']}")
+        self._logger("✅ 已接收手动输入验证码")
 
         try:
-            self._logger(f"正在填入验证码: {otp}")
-
+            self._logger("正在填入验证码")
             otp_kind, otp_input = self.get_otp_input_locator(page)
             if not otp_input:
                 self._logger("⚠️ 填写验证码前无法重新定位输入框")
@@ -676,20 +546,12 @@ class PageService:
 
             self.clear_and_type_otp(otp_input, otp, page, otp_kind)
 
-            try:
-                current_value = otp_input.input_value()
-                self._logger(f"当前输入框中的验证码值: {current_value}")
-            except Exception:
-                self._logger("⚠️ 输入后页面可能已跳转，无法再读取 otp input 值")
-
             from services.utils import dump_page_state
             dump_page_state(page, "after_fill_otp")
 
             self._logger("验证码已填写，等待页面自动跳转...")
             sleep(5000)
-            from services.utils import dump_page_state
             dump_page_state(page, "after_fill_otp_wait")
-
         except Exception as e:
             self._logger(f"⚠️ 填写验证码失败: {e}")
             self.log_input_candidates(page, "OTP_INPUT_FILL_EXCEPTION")
@@ -703,16 +565,8 @@ class PageService:
         from services.utils import dump_page_state
         dump_page_state(page, "after_otp_result")
 
-        if result_type == "otp_error":
-            self._logger("❌ 页面明确提示验证码提交失败")
-            return False
-
-        if result_type == "otp_still_here":
-            self._logger("⚠️ 输入验证码后仍停留在 OTP 页面")
-            return False
-
-        if result_type == "blocked":
-            self._logger("❌ OTP 成功后被风控拦截")
+        if result_type in ("otp_error", "otp_still_here", "blocked"):
+            self._logger("❌ 验证码登录未成功")
             return False
 
         if result_type == "company_select":
@@ -726,17 +580,7 @@ class PageService:
             except Exception:
                 pass
 
-            from services.utils import save_login_state
-            save_login_state(context, account.storage_path)
-            return True
-
-        if result_type in ("dashboard", "messenger"):
-            from services.utils import save_login_state
-            save_login_state(context, account.storage_path)
-            return True
-
-        self._logger("⚠️ 验证码提交后页面状态未知")
-        return False
+        return self.is_messenger_page(page)
 
     def ensure_logged_in_and_ready(self, page, context, account, TARGET_URL):
         self._logger(f"🌐 登录后检查页面: {page.url}")
