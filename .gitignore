@@ -13,3 +13,5 @@ exeFile/task_center.db
 dispatch-backend/task_center.db
 
 dispatch-backend/.env
+node_modules/*
+DockerFile/*

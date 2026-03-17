@@ -15,6 +15,7 @@ import socket
 import time
 import urllib.request
 from dotenv import load_dotenv
+from services import ConfigService
 
 # 加载.env配置文件
 load_dotenv()
@@ -26,6 +27,12 @@ from typing import List, Optional
 from imapclient import IMAPClient
 
 from email_otp import get_imap_server
+from models import AccountInfo
+from ui.account_dialog import AccountDialog
+from services.mail_service import get_latest_mail_id
+from services.dispatch_service import DispatchService
+from services.task_service import TaskService
+from services.account_service import AccountService
 from ozon_core import (
     close_all_sessions,
     close_session,
@@ -35,243 +42,11 @@ from ozon_core import (
 )
 
 
-DISPATCH_SERVER = os.environ.get("DISPATCH_SERVER", "http://127.0.0.1:18080")
+DISPATCH_SERVER = os.environ.get("DISPATCH_SERVER", "https://www.rus2cn.com")
 HEARTBEAT_INTERVAL = 15
 
 
-@dataclass
-class AccountInfo:
-    """账号信息数据模型"""
 
-    email: str
-    imap_password: str = ""
-    storage_path: Optional[str] = field(default=None)
-    is_selected: bool = False
-    login_status: str = "未登录"   # 未登录 / 登录中 / 已登录 / 登录失败
-    task_status: str = "空闲"     # 空闲 / 执行中 / 完成 / 失败
-    last_login: float = 0
-    login_count: int = 0
-    last_error: str = ""
-
-    def __post_init__(self) -> None:
-        if self.storage_path is None:
-            safe_email = self.email.replace("@", "_").replace(".", "_")
-            self.storage_path = os.path.join("accounts", f"ozon_auth_{safe_email}.json")
-
-    def validate(self) -> bool:
-        """验证账号信息是否完整"""
-        return bool(self.email.strip() and self.imap_password.strip())
-
-def get_latest_mail_id(email_addr: str, email_pass: str, imap_server: str) -> dict:
-    print("正在获取当前邮箱最新邮件 ID...")
-
-    try:
-        # 使用 with 自动管理连接和登出
-        with IMAPClient(imap_server, ssl=True, port=993) as client:
-            print(f"正在连接 IMAP 服务器: {imap_server}")
-
-            # 关键步骤：网易163必须发送 ID 命令，否则 SELECT 会报 Unsafe Login
-            client.id_({
-                'name': 'Ozon Upload Tool',
-                'version': '1.0',
-                'vendor': 'CustomApp',
-                'os': 'Windows',
-            })
-            print("已发送 ID 命令（绕过网易 Unsafe Login 保护）")
-
-            # 登录
-            client.login(email_addr, email_pass)
-            print("✅ 邮箱登录成功")
-
-            # 选择收件箱
-            client.select_folder('INBOX')
-            print("已打开 INBOX")
-
-            # 获取所有邮件 ID
-            messages = client.search(['ALL'])
-            if not messages:
-                return {
-                    "success": True,
-                    "message": "邮箱连接成功，但暂无邮件",
-                    "latest_mail_id": None,
-                }
-
-            latest_id = max(messages)  # 最大的 ID 就是最新邮件
-            print(f"✅ 当前最新邮件 ID: {latest_id}")
-
-            return {
-                "success": True,
-                "message": "邮箱连接成功，能够正常读取邮件列表",
-                "latest_mail_id": str(latest_id),
-            }
-
-    except Exception as e:
-        error_str = str(e).lower()
-        print(f"❌ 获取最新邮件 ID 失败: {e}")
-
-        if "unsafe login" in error_str:
-            msg = "网易邮箱拒绝访问（Unsafe Login），可能是 ID 命令未发送或风控触发"
-        elif "login" in error_str or "auth" in error_str:
-            msg = "认证失败，请检查邮箱 + 授权码是否正确"
-        elif "connect" in error_str or "timeout" in error_str:
-            msg = f"无法连接到 {imap_server}，请检查网络或服务器地址"
-        else:
-            msg = str(e)
-
-        return {
-            "success": False,
-            "message": msg,
-            "latest_mail_id": None,
-        }
-
-class AccountDialog(tk.Toplevel):
-    """账号管理对话框"""
-
-    def __init__(self, parent, app, account: Optional[AccountInfo] = None):
-        super().__init__(parent)
-        self.title("添加 Ozon 账号" if account is None else "编辑 Ozon 账号")
-        self.app = app
-        self.result: Optional[AccountInfo] = None
-
-        self.email_var = tk.StringVar(value=account.email if account else "")
-        self.imap_pwd_var = tk.StringVar(value=account.imap_password if account else "")
-        self.storage_path_var = tk.StringVar(value=account.storage_path if account else "")
-
-        self._build_ui()
-
-        self.grab_set()
-        self.wait_window()
-
-    def _build_ui(self) -> None:
-        """构建对话框 UI"""
-        tk.Label(self, text="邮箱地址:").grid(row=0, column=0, padx=10, pady=8, sticky="e")
-        tk.Entry(self, textvariable=self.email_var, width=50).grid(row=0, column=1, padx=10, pady=8)
-
-        tk.Label(self, text="IMAP授权码:").grid(row=1, column=0, padx=10, pady=8, sticky="e")
-        self.imap_entry = tk.Entry(self, textvariable=self.imap_pwd_var, width=50, show="•")
-        self.imap_entry.grid(row=1, column=1, padx=10, pady=8)
-
-        self.show_pwd_btn = tk.Button(self, text="显示", command=self.toggle_show_password)
-        self.show_pwd_btn.grid(row=1, column=2, padx=5, pady=8)
-
-        tk.Label(self, text="登录态保存路径:").grid(row=2, column=0, padx=10, pady=8, sticky="e")
-        tk.Entry(self, textvariable=self.storage_path_var, width=40).grid(row=2, column=1, padx=5, pady=8)
-        tk.Button(self, text="自动生成", command=self.auto_generate_path).grid(row=2, column=2, padx=5, pady=8)
-
-        help_text = (
-            "📝 说明：\n"
-            "1. 邮箱地址: 您的 Ozon 登录邮箱\n"
-            "2. IMAP授权码: 邮箱客户端授权密码\n"
-            "   - 163邮箱: 设置 → POP3/SMTP/IMAP → 开启 IMAP\n"
-            "   - QQ邮箱: 设置 → 账户 → 开启 POP3/IMAP/SMTP 服务\n"
-        )
-        tk.Label(self, text=help_text, justify="left", fg="gray").grid(
-            row=3,
-            column=0,
-            columnspan=3,
-            padx=10,
-            pady=5,
-        )
-
-        btn_frame = tk.Frame(self)
-        btn_frame.grid(row=4, column=0, columnspan=3, padx=10, pady=10)
-
-        tk.Button(btn_frame, text="测试连接", command=self.test_connection).pack(side="left", padx=10)
-        tk.Button(btn_frame, text="保存", command=self.save).pack(side="left", padx=10)
-        tk.Button(btn_frame, text="取消", command=self.destroy).pack(side="left", padx=10)
-
-    def auto_generate_path(self) -> None:
-        """自动生成存储路径"""
-        email = self.email_var.get().strip()
-        if not email:
-            return
-
-        safe_email = email.replace("@", "_").replace(".", "_")
-        path = os.path.join("accounts", f"ozon_auth_{safe_email}.json")
-        self.storage_path_var.set(path)
-
-    def test_connection(self) -> None:
-        """测试邮箱连接"""
-        email_addr = self.email_var.get().strip()
-        imap_pwd = self.imap_pwd_var.get().strip()
-
-        if not email_addr or not imap_pwd:
-            messagebox.showwarning("提示", "请先填写邮箱和 IMAP 授权码")
-            return
-
-        try:
-            imap_server = get_imap_server(email_addr)
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 正在测试邮箱: {email_addr}")
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] IMAP服务器: {imap_server}")
-
-            result = get_latest_mail_id(email_addr, imap_pwd, imap_server)
-
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 测试结果: {result}")
-
-            if result["success"]:
-                if result["latest_mail_id"] is not None:
-                    messagebox.showinfo(
-                        "成功",
-                        f"✅ 邮箱连接测试成功！\n"
-                        f"{result['message']}\n"
-                        f"最新邮件ID: {result['latest_mail_id']}"
-                    )
-                else:
-                    messagebox.showinfo(
-                        "成功",
-                        f"✅ 邮箱连接测试成功！\n{result['message']}"
-                    )
-            else:
-                error_msg = result["message"].lower()
-
-                if "unsafe login" in error_msg:
-                    messagebox.showerror(
-                        "失败",
-                        "❌ 邮箱服务器拒绝读取收件箱（Unsafe Login）\n"
-                        "这通常是邮箱服务商的安全风控导致的，请检查邮箱安全设置或联系邮箱客服。"
-                    )
-                elif "authentication failed" in error_msg or "invalid credentials" in error_msg:
-                    messagebox.showerror("失败", "❌ 认证失败，请检查 IMAP 授权码是否正确")
-                elif "timed out" in error_msg or "connection refused" in error_msg:
-                    messagebox.showerror("失败", f"❌ 无法连接到 IMAP 服务器: {imap_server}")
-                else:
-                    messagebox.showerror("失败", f"❌ 邮箱连接失败: {result['message']}")
-
-        except Exception:
-            error_details = traceback.format_exc()
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 完整错误信息:")
-            print(error_details)
-            messagebox.showerror("失败", "❌ 邮箱连接测试过程中发生异常，请查看控制台日志")
-
-    def toggle_show_password(self) -> None:
-        """切换 IMAP 授权码显示/隐藏"""
-        if self.imap_entry.cget("show") == "•":
-            self.imap_entry.config(show="")
-            self.show_pwd_btn.config(text="隐藏")
-        else:
-            self.imap_entry.config(show="•")
-            self.show_pwd_btn.config(text="显示")
-
-    def save(self) -> None:
-        """保存账号信息"""
-        email = self.email_var.get().strip()
-        imap_pwd = self.imap_pwd_var.get().strip()
-        storage_path = self.storage_path_var.get().strip()
-
-        if not email:
-            messagebox.showwarning("提示", "邮箱地址不能为空")
-            return
-
-        if not imap_pwd:
-            messagebox.showwarning("提示", "IMAP 授权码不能为空")
-            return
-
-        self.result = AccountInfo(
-            email=email,
-            imap_password=imap_pwd,
-            storage_path=storage_path or None,
-        )
-        self.destroy()
 
 
 class OzonMultiApp:
@@ -287,6 +62,12 @@ class OzonMultiApp:
         self.task_running = False
         self.client_id = f"{socket.gethostname()}-{os.getpid()}"
         self._heartbeat_stop = threading.Event()
+        # 初始化分派服务
+        self.dispatch_service = DispatchService(self.append_log)
+        self.dispatch_service.set_client_id(self.client_id)
+        self.task_service = TaskService(self)
+        self.account_service = AccountService(self)
+        self.accounts = self.account_service.accounts
 
         # 先构建UI，确保log_text存在
         self.build_ui()
@@ -308,67 +89,7 @@ class OzonMultiApp:
         self.append_log("✅ 程序初始化完成")
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-
-    def load_accounts_config(self) -> None:
-        """从配置文件加载账号信息"""
-        config_file = "ozon_accounts_config.json"
-
-        if os.path.exists(config_file):
-            try:
-                with open(config_file, "r", encoding="utf-8") as f:
-                    accounts_data = json.load(f)
-
-                for data in accounts_data:
-                    try:
-                        account = AccountInfo(
-                            email=data["email"],
-                            imap_password=data.get("imap_password", ""),
-                            storage_path=data.get("storage_path"),
-                        )
-                        account.is_selected = data.get("is_selected", False)
-                        account.login_status = data.get("login_status", "未登录")
-                        account.last_login = data.get("last_login", 0)
-                        account.login_count = data.get("login_count", 0)
-                        account.last_error = data.get("last_error", "")
-                        self.accounts.append(account)
-                    except Exception as exc:
-                        print(f"加载账号失败: {exc}")
-            except Exception as exc:
-                print(f"加载配置文件失败: {exc}")
-
-        if not self.accounts:
-            default_account = AccountInfo(
-                email="xpw709@163.com",
-                imap_password="UE4NLW7W2X4NzunU",
-            )
-            self.accounts.append(default_account)
-
-        self.save_accounts_config()
-
-    def save_accounts_config(self) -> None:
-        """保存账号配置到文件"""
-        config_file = "ozon_accounts_config.json"
-
-        accounts_data = []
-        for account in self.accounts:
-            accounts_data.append(
-                {
-                    "email": account.email,
-                    "imap_password": account.imap_password,
-                    "storage_path": account.storage_path,
-                    "is_selected": account.is_selected,
-                    "login_status": account.login_status,
-                    "last_login": account.last_login,
-                    "login_count": account.login_count,
-                    "last_error": account.last_error,
-                }
-            )
-
-        try:
-            with open(config_file, "w", encoding="utf-8") as f:
-                json.dump(accounts_data, f, ensure_ascii=False, indent=2)
-        except Exception as exc:
-            self.append_log(f"保存配置失败: {exc}")
+        self.config_service = ConfigService()
 
     def build_ui(self) -> None:
         """构建 UI 界面"""
@@ -498,12 +219,7 @@ class OzonMultiApp:
 
     def add_account(self) -> None:
         """添加新账号"""
-        dialog = AccountDialog(self.root, self)
-        if dialog.result:
-            self.accounts.append(dialog.result)
-            self.update_accounts_list()
-            self.save_accounts_config()
-            self.append_log(f"➕ 添加新账号: {dialog.result.email}")
+        self.account_service.add_account()
 
     def edit_account(self) -> None:
         """编辑选中的账号"""
@@ -513,13 +229,7 @@ class OzonMultiApp:
             return
 
         index = selected_indices[0]
-        dialog = AccountDialog(self.root, self, self.accounts[index])
-        if dialog.result:
-            old_email = self.accounts[index].email
-            self.accounts[index] = dialog.result
-            self.update_accounts_list()
-            self.save_accounts_config()
-            self.append_log(f"✏️ 编辑账号: {old_email} -> {dialog.result.email}")
+        self.account_service.edit_account(index)
 
     def delete_account(self) -> None:
         """删除选中的账号"""
@@ -532,16 +242,7 @@ class OzonMultiApp:
         account = self.accounts[index]
 
         if messagebox.askyesno("确认", f"确定要删除账号: {account.email}?"):
-            try:
-                close_session(account.email)
-                self.append_log(f"🔌 关闭账号会话: {account.email}")
-            except Exception as exc:
-                self.append_log(f"❌ 关闭会话时出错: {exc}")
-
-            del self.accounts[index]
-            self.update_accounts_list()
-            self.save_accounts_config()
-            self.append_log(f"🗑️ 删除账号: {account.email}")
+            self.account_service.delete_account(index)
 
     def choose_image(self) -> None:
         """选择图片文件"""
@@ -551,72 +252,10 @@ class OzonMultiApp:
         if path:
             self.image_var.set(path)
 
-    def parse_sku_text(self, text: str) -> list:
-        """解析SKU文本，支持换行、逗号、分号、制表符分隔"""
-        skus = []
-        lines = text.split('\n')
-        for line in lines:
-            # 移除空格和制表符
-            line = line.strip()
-            if line:
-                # 支持逗号和分号分隔
-                for sku in line.replace(';', ',').split(','):
-                    sku = sku.strip()
-                    if sku:
-                        skus.append(sku)
-        return list(dict.fromkeys(skus))
 
-    def get_sku_text(self) -> str:
-        """获取文本框中的SKU文本"""
-        sku_text_widget = self.root.nametowidget('.!ozonmultiapp.!labelframe.!labelframe.!text')
-        return sku_text_widget.get("1.0", "end-1c")
-
-    def _dispatch_get(self, path: str) -> dict:
-        try:
-            req = urllib.request.Request(
-                DISPATCH_SERVER + path,
-                method="GET",
-                headers={"Content-Type": "application/json"},
-            )
-            self.append_log(f"🔍 发送GET请求到 {DISPATCH_SERVER}{path}")
-            with urllib.request.urlopen(req, timeout=8) as r:
-                response_data = json.loads(r.read().decode("utf-8"))
-                self.append_log(f"✅ 收到来自 {DISPATCH_SERVER}{path} 的响应: {json.dumps(response_data, ensure_ascii=False)}")
-                return response_data
-        except Exception as e:
-            self.append_log(f"❌ GET请求 {DISPATCH_SERVER}{path} 失败: {str(e)}")
-            raise
-
-    def _dispatch_post(self, path: str, payload: dict) -> dict:
-        try:
-            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            req = urllib.request.Request(
-                DISPATCH_SERVER + path,
-                data=body,
-                method="POST",
-                headers={"Content-Type": "application/json"},
-            )
-            self.append_log(f"🔌 发送POST请求到 {DISPATCH_SERVER}{path}, 载荷: {json.dumps(payload, ensure_ascii=False)}")
-            with urllib.request.urlopen(req, timeout=8) as r:
-                response_data = json.loads(r.read().decode("utf-8"))
-                self.append_log(f"✅ 收到来自 {DISPATCH_SERVER}{path} 的响应: {json.dumps(response_data, ensure_ascii=False)}")
-                return response_data
-        except Exception as e:
-            self.append_log(f"❌ POST请求 {DISPATCH_SERVER}{path} 失败: {str(e)}")
-            raise
 
     def pull_task_from_dispatch(self) -> Optional[dict]:
-        try:
-            task = self._dispatch_get(f"/api/clients/{self.client_id}/task")
-            if task:
-                self.append_log(f"🎉 成功拉取到新任务: {json.dumps(task, ensure_ascii=False)}")
-                return task
-            else:
-                self.append_log("ℹ️ 没有待执行的任务")
-                return None
-        except Exception as e:
-            self.append_log(f"❌ 拉取任务失败: {str(e)}")
-            return None
+        return self.dispatch_service.pull_task()
 
     def _logged_in_accounts(self) -> List[str]:
         return [a.email for a in self.accounts if a.login_status == "已登录" and a.validate()]
@@ -624,24 +263,13 @@ class OzonMultiApp:
     def sync_dispatch_status_once(self) -> None:
         try:
             accounts = self._logged_in_accounts()
-            self.append_log(f"🔍 同步分派状态，当前在线账号数: {len(accounts)}")
-
-            if not accounts:
-                self.append_log("⚠️ 没有登录的账号，跳过注册和心跳")
-                return
-
-            self.append_log(f"📝 注册客户端 {self.client_id}，账号列表: {accounts}")
-            self._dispatch_post("/api/clients/register", {"client_id": self.client_id, "accounts": accounts})
-
-            self.append_log(f"💓 发送心跳给分派服务，客户端ID: {self.client_id}")
-            self._dispatch_post("/api/clients/heartbeat", {"client_id": self.client_id, "accounts": accounts})
-
-            self.append_log("✅ 分派状态同步完成")
+            self.dispatch_service.sync_status_once(accounts)
         except Exception as e:
             self.append_log(f"❌ 同步分派状态失败: {str(e)}")
             raise
 
     def dispatch_heartbeat_loop(self) -> None:
+        from services.dispatch_service import HEARTBEAT_INTERVAL
         self.append_log(f"🚀 启动分派心跳循环，间隔: {HEARTBEAT_INTERVAL}秒")
         while not self._heartbeat_stop.is_set():
             try:
@@ -667,7 +295,7 @@ class OzonMultiApp:
                     if task:
                         self.append_log(f"📋 处理任务: {task.get('id', '未知ID')}")
                         # 标记任务为运行中
-                        self._dispatch_post(f"/api/clients/{self.client_id}/tasks/{task['id']}/running", {})
+                        self.dispatch_service.mark_task_running(task['id'])
                         # 执行任务
                         self.run_task_from_dispatch(task)
                 else:
@@ -680,6 +308,7 @@ class OzonMultiApp:
 
     def run_task_from_dispatch(self, task: dict):
         """处理从分派服务拉取的任务"""
+        self.task_service.run_task_from_dispatch(task)
         try:
             task_id = task["id"]
             account = task.get("assigned_account")
@@ -697,10 +326,11 @@ class OzonMultiApp:
 
             if not target_account:
                 self.append_log(f"❌ 找不到分配的账号: {account}")
-                self._dispatch_post(f"/api/clients/{self.client_id}/tasks/{task_id}/complete", {
-                    "success": False,
-                    "error": f"找不到分配的账号: {account}"
-                })
+                self.dispatch_service.mark_task_complete(
+                    task_id,
+                    success=False,
+                    error=f"找不到分配的账号: {account}"
+                )
                 return
 
             # 确保账号已登录
@@ -718,23 +348,25 @@ class OzonMultiApp:
             # 检查是否有SKU需要处理
             if not skus:
                 self.append_log(f"❌ 任务中没有包含任何SKU")
-                self._dispatch_post(f"/api/clients/{self.client_id}/tasks/{task_id}/complete", {
-                    "success": False,
-                    "error": "任务中没有包含任何SKU"
-                })
+                self.dispatch_service.mark_task_complete(
+                    task_id,
+                    success=False,
+                    error="任务中没有包含任何SKU"
+                )
                 return
 
             image_path = self.image_var.get().strip()
             if not os.path.exists(image_path):
                 self.append_log(f"❌ 图片文件不存在: {image_path}")
-                self._dispatch_post(f"/api/clients/{self.client_id}/tasks/{task_id}/complete", {
-                    "success": False,
-                    "error": f"图片文件不存在: {image_path}"
-                })
+                self.dispatch_service.mark_task_complete(
+                    task_id,
+                    success=False,
+                    error=f"图片文件不存在: {image_path}"
+                )
                 return
 
             # 标记任务为运行中
-            self._dispatch_post(f"/api/clients/{self.client_id}/tasks/{task_id}/running", {})
+            self.dispatch_service.mark_task_running(task['id'])
 
             # 执行任务（直接使用SKU列表，不再从Excel读取）
             from ozon_core import run_task_with_skus
@@ -746,13 +378,15 @@ class OzonMultiApp:
                 imap_password=target_account.imap_password,
                 storage_path=target_account.storage_path,
                 headless=self.headless_var.get(),
+                use_manual_login=target_account.use_manual_login,
             )
 
             # 标记任务为成功
-            self._dispatch_post(f"/api/clients/{self.client_id}/tasks/{task_id}/complete", {
-                "success": True,
-                "result": {"sku_count": len(skus)}
-            })
+            self.dispatch_service.mark_task_complete(
+                task_id,
+                success=True,
+                sku_count=len(skus)
+            )
 
             self.append_log(f"✅ 任务 {task_id} 执行成功")
 
@@ -760,10 +394,11 @@ class OzonMultiApp:
             self.append_log(f"❌ 任务执行失败: {str(exc)}")
             self.append_log(f"📝 错误详情: {traceback.format_exc()}")
             try:
-                self._dispatch_post(f"/api/clients/{self.client_id}/tasks/{task_id}/complete", {
-                    "success": False,
-                    "error": str(exc)
-                })
+                self.dispatch_service.mark_task_complete(
+                    task_id,
+                    success=False,
+                    error=str(exc)
+                )
             except:
                 pass
 
@@ -784,44 +419,7 @@ class OzonMultiApp:
 
     def login_account_thread(self, account: AccountInfo) -> None:
         """账号登录线程"""
-        if not account.validate():
-            self.append_log(f"❌ 账号信息不完整: {account.email}")
-            account.login_status = "登录失败"
-            account.last_error = "账号信息不完整"
-            self.update_accounts_list()
-            return
-
-        try:
-            account.login_status = "登录中"
-            self.update_accounts_list()
-            self.append_log(f"🚀 开始登录账号: {account.email}")
-
-            prepare_browser(
-                email=account.email,
-                imap_password=account.imap_password,
-                storage_path=account.storage_path,
-                headless=self.headless_var.get(),
-            )
-
-            account.login_status = "已登录"
-            account.last_login = datetime.now().timestamp()
-            account.login_count += 1
-            account.last_error = ""
-
-            self.append_log(f"✅ 账号登录成功: {account.email}")
-            try:
-                self.sync_dispatch_status_once()
-            except Exception as exc:
-                self.append_log(f"⚠️ 同步登录状态到分派服务失败: {exc}")
-
-        except Exception as exc:
-            account.login_status = "登录失败"
-            account.last_error = str(exc)
-            self.append_log(f"❌ 登录账号出错: {account.email}, {exc}")
-
-        finally:
-            self.update_accounts_list()
-            self.save_accounts_config()
+        self.account_service.login_account_thread(account)
 
     def login_selected_accounts(self) -> None:
         """登录选中的账号"""
@@ -830,81 +428,9 @@ class OzonMultiApp:
             messagebox.showwarning("提示", "请先选择要登录的账号")
             return
 
-        for index in selected_indices:
-            account = self.accounts[index]
-            threading.Thread(
-                target=self.login_account_thread,
-                args=(account,),
-                daemon=True,
-            ).start()
+        self.account_service.login_selected_accounts(selected_indices)
 
-    def run_task_thread(self, account: AccountInfo) -> None:
-        """执行任务线程"""
-        if not account.validate():
-            self.append_log(f"❌ 账号信息不完整: {account.email}")
-            return
 
-        sku_text = self.get_sku_text()
-        image_path = self.image_var.get().strip()
-
-        # 解析SKU列表
-        skus = self.parse_sku_text(sku_text)
-        if not skus:
-            self.append_log(f"❌ 没有输入有效的SKU")
-            return
-
-        if not os.path.exists(image_path):
-            self.append_log(f"❌ 图片文件不存在: {image_path}")
-            return
-
-        try:
-            account.task_status = "执行中"
-            self.update_accounts_list()
-            self.append_log(f"🚀 开始在账号 {account.email} 上执行任务")
-            self.append_log(f"📋 执行的SKU: {skus}")
-
-            # 使用run_task_with_skus直接执行任务
-            run_task_with_skus(
-                email=account.email,
-                skus=skus,
-                image_path=image_path,
-                imap_password=account.imap_password,
-                storage_path=account.storage_path,
-                headless=self.headless_var.get(),
-            )
-
-            account.task_status = "完成"
-            self.append_log(f"✅ 任务执行完成: {account.email}")
-
-        except Exception as exc:
-            account.task_status = "失败"
-            self.append_log(f"❌ 任务执行失败: {account.email}, {exc}")
-            self.append_log(f"📝 错误详情: {traceback.format_exc()}")
-
-        finally:
-            account.task_status = "空闲"
-            self.update_accounts_list()
-            self.save_accounts_config()
-
-    def run_task_on_selected(self) -> None:
-        """在选中的账号上执行任务"""
-        selected_indices = self.accounts_listbox.curselection()
-        if not selected_indices:
-            messagebox.showwarning("提示", "请先选择要执行任务的账号")
-            return
-
-        for index in selected_indices:
-            account = self.accounts[index]
-
-            if account.login_status != "已登录":
-                self.append_log(f"⚠️ 账号未登录: {account.email}，请先登录")
-                continue
-
-            threading.Thread(
-                target=self.run_task_thread,
-                args=(account,),
-                daemon=True,
-            ).start()
 
     def close_selected_accounts(self) -> None:
         """关闭选中账号会话"""
@@ -913,25 +439,14 @@ class OzonMultiApp:
             messagebox.showwarning("提示", "请先选择要关闭的账号")
             return
 
-        for index in selected_indices:
-            account = self.accounts[index]
-
-            try:
-                close_session(account.email)
-                account.login_status = "未登录"
-                self.append_log(f"✅ 已关闭账号会话: {account.email}")
-            except Exception as exc:
-                self.append_log(f"❌ 关闭账号会话失败: {account.email}, {exc}")
-
-        self.update_accounts_list()
-        self.save_accounts_config()
+        self.account_service.close_selected_accounts(selected_indices)
 
     def on_close(self) -> None:
         """窗口关闭事件"""
         if messagebox.askyesno("确认", "确定要退出程序吗？"):
             self._heartbeat_stop.set()
             try:
-                self._dispatch_post("/api/clients/offline", {"client_id": self.client_id})
+                self.dispatch_service.mark_client_offline()
             except Exception:
                 pass
 

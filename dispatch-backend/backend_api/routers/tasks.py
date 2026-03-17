@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
 
@@ -13,7 +14,7 @@ router = APIRouter(tags=["tasks"])
 
 
 @router.post("/tasks")
-async def create_task(request: CreateTaskRequest, authorization: str | None = Header(default=None)):
+async def create_task(request: CreateTaskRequest, authorization: Optional[str] = Header(default=None)):
     try:
         user = get_current_user(authorization)
         day_prefix = datetime.utcnow().strftime("%Y-%m-%d")
@@ -32,6 +33,6 @@ async def create_task(request: CreateTaskRequest, authorization: str | None = He
 
 
 @router.get("/tasks")
-async def list_tasks(authorization: str | None = Header(default=None)):
+async def list_tasks(authorization: Optional[str] = Header(default=None)):
     user = get_current_user(authorization)
     return {"items": CENTER.list_tasks_for_user(user["id"])}

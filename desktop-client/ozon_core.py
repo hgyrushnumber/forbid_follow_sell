@@ -9,7 +9,10 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 from playwright_stealth import Stealth
 
 from email_otp import get_otp_from_email, get_latest_ozon_mail_id
-
+import sys
+from models import OzonAccount, BrowserSession
+if getattr(sys, "frozen", False):
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(sys._MEIPASS, "ms-playwright")
 
 # =========================
 # 配置常量
@@ -21,207 +24,35 @@ TARGET_URL = "https://seller.ozon.ru/app/messenger?channel=SCRM"
 DASHBOARD_URL = "https://seller.ozon.ru/app/dashboard/main"
 HOME_URL = "https://seller.ozon.ru/"
 
-DEFAULT_STORAGE_DIR = "accounts"
-VIDEO_DIR = "videos"
-DEBUG_DIR = "debug_artifacts"
+from services.utils import ensure_dirs, log, sleep, set_logger
+from services.session_service import SessionService
+from services.page_service import PageService
+from services.sku_service import SkuService
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/122.0.0.0 Safari/537.36"
-)
-
-CANDIDATE_HEADERS = [
-    "sku",
-    "seller sku",
-    "seller_sku",
-    "sku id",
-    "商品sku",
-    "商品 sku",
-    "商家sku",
-    "商家 sku",
-    "货号",
-    "编码",
-    "артикул",
-    "sku продавца",
-]
-
-
-# =========================
-# 数据类
-# =========================
-@dataclass
-class OzonAccount:
-    """Ozon账号信息"""
-    email: str
-    imap_password: str
-    storage_path: str = field(default=None)
-
-    def __post_init__(self):
-        if self.storage_path is None:
-            safe_email = self.email.replace("@", "_").replace(".", "_")
-            self.storage_path = os.path.join(DEFAULT_STORAGE_DIR, f"ozon_auth_{safe_email}.json")
-
-
-@dataclass
-class BrowserSession:
-    """浏览器会话信息"""
-    email: str
-    storage_path: str
-    playwright = None
-    browser = None
-    context = None
-    page = None
-    is_alive: bool = False
-    last_activity: float = 0
-
-
-# =========================
-# 会话管理
-# =========================
-class SessionManager:
-    """会话管理器 - 管理多账号的浏览器会话"""
-
-    def __init__(self):
-        self.sessions = {}
-
-    def get_session(self, account: OzonAccount, headless: bool = False, slow_mo: int = 200) -> BrowserSession:
-        """获取或创建账号的浏览器会话"""
-        if account.email in self.sessions:
-            session = self.sessions[account.email]
-            if self._is_session_alive(session):
-                log(f"✅ 复用已存在的会话: {account.email}")
-                session.last_activity = time.time()
-                return session
-            else:
-                log(f"⚠️ 会话已失效，创建新会话: {account.email}")
-                self._close_session(session)
-
-        session = self._create_session(account, headless, slow_mo)
-        self.sessions[account.email] = session
-        return session
-
-    def _is_session_alive(self, session: BrowserSession) -> bool:
-        """检查会话是否有效"""
-        if not session.is_alive or not session.page:
-            return False
-
-        try:
-            # 尝试访问页面属性来判断会话是否有效
-            _ = session.page.url
-            session.page.title()
-            return True
-        except Exception as e:
-            log(f"⚠️ 会话检查失败: {e}")
-            return False
-
-    def _create_session(self, account: OzonAccount, headless: bool, slow_mo: int) -> BrowserSession:
-        """创建新的浏览器会话"""
-        log(f"🚀 正在启动新的浏览器会话: {account.email}")
-
-        ensure_dirs()
-
-        session = BrowserSession(
-            email=account.email,
-            storage_path=account.storage_path
-        )
-
-        session.playwright = sync_playwright().start()
-        session.browser = session.playwright.chromium.launch(
-            headless=headless,
-            slow_mo=slow_mo,
-            args=[
-                "--disable-gpu",
-                "--start-maximized",
-            ],
-        )
-
-        # 加载已有的登录状态
-        storage_state = account.storage_path if os.path.exists(account.storage_path) else None
-
-        session.context = session.browser.new_context(
-            storage_state=storage_state,
-            user_agent=USER_AGENT,
-            viewport={"width": 1600, "height": 900},
-            locale="ru-RU",
-            timezone_id="Europe/Moscow",
-            record_video_dir=VIDEO_DIR,
-            record_video_size={"width": 1280, "height": 720},
-        )
-
-        session.page = session.context.new_page()
-        attach_debug_listeners(session.page)
-
-        try:
-            Stealth().apply_stealth_sync(session.page)
-            log("✅ Stealth 注入成功")
-        except Exception as e:
-            log(f"⚠️ Stealth 注入失败（但不影响后续运行）: {e}")
-
-        session.is_alive = True
-        session.last_activity = time.time()
-
-        log(f"✅ 会话创建成功: {account.email}")
-        return session
-
-    def _close_session(self, session: BrowserSession):
-        """关闭会话"""
-        log(f"🛑 正在关闭会话: {session.email}")
-
-        try:
-            if session.context:
-                save_login_state(session.context, session.storage_path)
-        except Exception as e:
-            log(f"⚠️ 保存登录态失败: {e}")
-
-        try:
-            if session.page:
-                session.page.close()
-        except Exception:
-            pass
-
-        try:
-            if session.context:
-                session.context.close()
-        except Exception:
-            pass
-
-        try:
-            if session.browser:
-                session.browser.close()
-        except Exception:
-            pass
-
-        try:
-            if session.playwright:
-                session.playwright.stop()
-        except Exception:
-            pass
-
-        session.is_alive = False
-
-    def close_all_sessions(self):
-        """关闭所有会话"""
-        for email, session in list(self.sessions.items()):
-            self._close_session(session)
-            del self.sessions[email]
-
-    def get_or_create_session(self, email: str, headless: bool = False, slow_mo: int = 200) -> BrowserSession:
-        """通过邮箱获取或创建会话"""
-        account = OzonAccount(email)
-        return self.get_session(account, headless, slow_mo)
 
 
 # =========================
 # 全局实例
 # =========================
-session_manager = SessionManager()
+session_service: Optional['SessionService'] = None
+page_service: Optional['PageService'] = None
+sku_service: Optional['SkuService'] = None
 _LOGGER: Callable[[str], None] = print
 
 
 def set_logger(logger_func: Callable[[str], None]):
-    global _LOGGER
+    global _LOGGER, session_service, page_service, sku_service
     _LOGGER = logger_func
+
+    # 延迟导入避免循环依赖
+    from services.session_service import SessionService
+    from services.page_service import PageService
+    from services.sku_service import SkuService
+
+    # 初始化服务
+    session_service = SessionService(logger_func)
+    page_service = PageService(logger_func)
+    sku_service = SkuService(logger_func)
 
 
 def log(msg: str):
@@ -544,7 +375,7 @@ def detect_page_type(page):
 
     if (
         ("Введите номер телефона" in body_text and "Войти по почте" in body_text)
-        or ("输入手机号" in body_text and "邮箱登录" in body_text)
+        or ("输入电话号码" in body_text and "使用邮箱登录" in body_text)
     ):
         return "ozon_id_phone"
 
@@ -1012,8 +843,17 @@ def login_with_email_otp(page, context, account: OzonAccount):
         try:
             dump_page_state(page, "before_click_login")
 
-            login_btn = page.get_by_text("Войти", exact=True).first
-            login_btn.wait_for(state="visible", timeout=10000)
+            # 支持点击中文或俄文的登录按钮
+            login_btn = None
+            try:
+                # 先尝试查找俄文按钮 "Войти"
+                login_btn = page.get_by_text("Войти", exact=True).first
+                login_btn.wait_for(state="visible", timeout=5000)
+            except:
+                # 如果俄文按钮未找到，尝试查找中文按钮 "登录"
+                login_btn = page.get_by_text("登录", exact=True).first
+                login_btn.wait_for(state="visible", timeout=5000)
+
             login_btn.click()
             page.wait_for_load_state("networkidle", timeout=20000)
             log("✅ 已点击登录按钮")
@@ -1031,8 +871,17 @@ def login_with_email_otp(page, context, account: OzonAccount):
         try:
             dump_page_state(page, "before_click_email_login")
 
-            email_login_btn = page.get_by_text("Войти по почте", exact=True).first
-            email_login_btn.wait_for(state="visible", timeout=15000)
+            # 支持点击中文或俄文的邮箱登录按钮
+            email_login_btn = None
+            try:
+                # 先尝试查找俄文按钮 "Войти по почте"
+                email_login_btn = page.get_by_text("Войти по почте", exact=True).first
+                email_login_btn.wait_for(state="visible", timeout=5000)
+            except:
+                # 如果俄文按钮未找到，尝试查找中文按钮 "邮箱登录"
+                email_login_btn = page.get_by_text("使用邮箱登录", exact=True).first
+                email_login_btn.wait_for(state="visible", timeout=5000)
+
             email_login_btn.click()
             page.wait_for_load_state("networkidle", timeout=15000)
             log("✅ 已点击“通过邮箱登录”")
@@ -1105,18 +954,46 @@ def login_with_email_otp(page, context, account: OzonAccount):
         dump_page_state(page, "error_otp_input_not_found")
         return False
 
-    otp_result = get_otp_from_email(
-        request_time=request_time,
-        min_mail_id=baseline_mail_id,
-        max_wait_seconds=60,
-        email_account=account.email,
-        email_password=account.imap_password
-    )
+    # 根据账号配置决定是否使用IMAP获取验证码
+    if hasattr(account, 'use_manual_login') and account.use_manual_login:
+        log("✅ 账号配置为手动输入验证码，跳过IMAP获取")
+        otp_result = None
+    else:
+        log("✅ 账号配置为使用IMAP获取验证码")
+        otp_result = get_otp_from_email(
+            request_time=request_time,
+            min_mail_id=baseline_mail_id,
+            max_wait_seconds=60,
+            email_account=account.email,
+            email_password=account.imap_password
+        )
 
     if not otp_result:
-        log("❌ 验证码提取失败")
+        log("❌ 验证码提取失败，尝试手动输入")
         dump_page_state(page, "error_otp_fetch_failed")
-        return False
+
+        # 尝试手动输入验证码
+        import tkinter as tk
+        from tkinter import simpledialog
+
+        root = tk.Tk()
+        root.withdraw()  # 隐藏主窗口
+
+        # 提示用户手动输入验证码
+        otp = simpledialog.askstring("验证码输入", "请输入收到的验证码:", parent=root)
+
+        if not otp:
+            log("❌ 用户未输入验证码")
+            return False
+
+        # 创建一个模拟的otp_result
+        otp_result = {
+            "otp": otp,
+            "mail_id": None,
+            "email_dt": None,
+            "subject": "手动输入",
+            "from_addr": "manual"
+        }
 
     otp = otp_result["otp"]
     log(f"本次使用的验证码: {otp}")
@@ -1568,28 +1445,36 @@ def execute(page, skus: List[str], image_path: str):
 # =========================
 def prepare_browser(
     email: str,
-    imap_password: str,
+    imap_password: str = "",
     storage_path: str = None,
     headless: bool = False,
     slow_mo: int = 200,
+    use_manual_login: bool = False,
 ):
     """准备浏览器 - 启动浏览器并确保登录状态"""
-    account = OzonAccount(email, imap_password, storage_path)
-    session = session_manager.get_session(account, headless, slow_mo)
+    if not session_service:
+        raise RuntimeError("未初始化会话服务，请先调用 set_logger")
+
+    account = OzonAccount(email, imap_password, storage_path, use_manual_login)
+    session = session_service.get_session(account, headless, slow_mo)
 
     session.page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
     log(f"当前页面: {session.page.url}")
     log(f"当前标题: {session.page.title()}")
 
-    ensure_logged_in_and_ready(session.page, session.context, account)
+    if not page_service:
+        raise RuntimeError("未初始化页面服务，请先调用 set_logger")
+
+    page_service.ensure_logged_in_and_ready(session.page, session.context, account, TARGET_URL)
 
     try:
-        session.context.storage_state(path=account.storage_path)
+        from services.utils import save_login_state
+        save_login_state(session.context, account.storage_path)
         log(f"✅ 已刷新并保存登录态: {account.storage_path}")
     except Exception as e:
         log(f"⚠️ 保存登录态失败: {e}")
 
-    normalize_messenger_home(session.page)
+    page_service.normalize_messenger_home(session.page, TARGET_URL)
 
     log(f"浏览器准备完成，当前页面: {session.page.url}")
     return session.page
@@ -1621,12 +1506,14 @@ def run_task_with_skus(
     email: str,
     skus: List[str],
     image_path: str,
-    imap_password: str,
+    imap_password: str = "",
     storage_path: str = None,
     headless: bool = False,
     slow_mo: int = 200,
+    use_manual_login: bool = False,
 ):
     """执行任务 - 直接使用 SKU 列表发送图片"""
+    from services.utils import ensure_dirs
     ensure_dirs()
 
     if not os.path.exists(image_path):
@@ -1640,15 +1527,17 @@ def run_task_with_skus(
 
     log(f"📊 读取到 {len(normalized_skus)} 个 SKU")
 
-    account = OzonAccount(email, storage_path)
-    session = session_manager.get_session(account, headless, slow_mo)
+    account = OzonAccount(email, imap_password, storage_path, use_manual_login)
+    session = session_service.get_session(account, headless, slow_mo)
 
     try:
-        if not session_manager._is_session_alive(session):
+        # 检查会话是否有效
+        from services.session_service import SessionService
+        if not isinstance(session_service, SessionService) or not session_service._is_session_alive(session):
             raise RuntimeError("浏览器页面不可用")
 
         # 只有当前不在可用页面时，才重新跳目标页
-        current_type = detect_page_type(session.page)
+        current_type = page_service.detect_page_type(session.page)
         log(f"执行前页面类型: {current_type}")
 
         if current_type not in ("messenger", "company_select", "login", "ozon_id_phone", "otp"):
@@ -1658,23 +1547,26 @@ def run_task_with_skus(
             except Exception:
                 pass
 
-        ensure_logged_in_and_ready(session.page, session.context, account)
+        page_service.ensure_logged_in_and_ready(session.page, session.context, account, TARGET_URL)
 
         try:
-            session.context.storage_state(path=account.storage_path)
+            from services.utils import save_login_state
+            save_login_state(session.context, account.storage_path)
             log(f"✅ 已刷新并保存登录态: {account.storage_path}")
         except Exception as e:
             log(f"⚠️ 保存登录态失败: {e}")
 
-        normalize_messenger_home(session.page)
+        page_service.normalize_messenger_home(session.page, TARGET_URL)
 
         log(f"登录完成后页面: {session.page.url}")
         log(f"登录完成后标题: {session.page.title()}")
 
-        execute(session.page, normalized_skus, image_path)
+        from services.sku_service import MENU_BUTTONS
+        sku_service.execute(session.page, normalized_skus, image_path, MENU_BUTTONS)
 
         try:
-            session.context.storage_state(path=account.storage_path)
+            from services.utils import save_login_state
+            save_login_state(session.context, account.storage_path)
             log(f"✅ 任务结束后已保存登录态: {account.storage_path}")
         except Exception as e:
             log(f"⚠️ 任务结束后保存登录态失败: {e}")
@@ -1688,15 +1580,14 @@ def run_task_with_skus(
 
 def close_all_sessions():
     """关闭所有浏览器会话"""
-    session_manager.close_all_sessions()
+    if session_service:
+        session_service.close_all_sessions()
 
 
 def close_session(email: str):
     """关闭指定邮箱的浏览器会话"""
-    if email in session_manager.sessions:
-        session = session_manager.sessions[email]
-        session_manager._close_session(session)
-        del session_manager.sessions[email]
+    if session_service:
+        session_service.close_session(email)
 
 
 # =========================

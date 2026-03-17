@@ -4,6 +4,7 @@
 import os
 import uuid
 from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import HTMLResponse
@@ -31,7 +32,7 @@ async def login_user():
 
 
 @router.get("/me")
-async def auth_me(authorization: str | None = Header(default=None)):
+async def auth_me(authorization: Optional[str] = Header(default=None)):
     user = get_current_user(authorization)
     day_prefix = datetime.utcnow().strftime("%Y-%m-%d")
     today_task_count = CENTER.count_user_tasks_for_day(user["id"], day_prefix)

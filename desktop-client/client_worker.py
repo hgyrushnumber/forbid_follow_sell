@@ -49,7 +49,7 @@ def load_accounts() -> list[str]:
         data = json.load(f)
     accounts = []
     for item in data:
-        if item.get("email") and item.get("imap_password"):
+        if item.get("email") and (item.get("imap_password") or item.get("use_manual_login")):
             accounts.append(item["email"])
     return list(dict.fromkeys(accounts))
 
@@ -63,10 +63,11 @@ def account_detail_map() -> dict:
         data = json.load(f)
     m = {}
     for item in data:
-        if item.get("email") and item.get("imap_password"):
+        if item.get("email") and (item.get("imap_password") or item.get("use_manual_login")):
             m[item["email"]] = {
                 "imap_password": item.get("imap_password", ""),
                 "storage_path": item.get("storage_path"),
+                "use_manual_login": item.get("use_manual_login", False),
             }
     return m
 
@@ -95,6 +96,7 @@ async def process_task(task):
             imap_password=detail_map[account]["imap_password"],
             storage_path=detail_map[account].get("storage_path"),
             headless=False,
+            use_manual_login=detail_map[account].get("use_manual_login", False),
         )
         post(f"/api/clients/{CLIENT_ID}/tasks/{task_id}/complete", {"success": True, "result": {"sku_count": len(skus)}})
     except Exception as exc:
