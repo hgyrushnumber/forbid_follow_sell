@@ -5,17 +5,16 @@
 
 import json
 import os
-import socket
 import time
-import uuid
 import urllib.request
 import asyncio
 from task_center import parse_sku_text
 from ozon_core import run_task_with_skus
+from services.client_identity import resolve_client_id
 
 # 替换为后端HTTP地址（线上替换为服务器域名）
 SERVER = os.environ.get("DISPATCH_SERVER", "http://127.0.0.1:18080")
-CLIENT_ID = os.environ.get("CLIENT_ID", f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}")
+CLIENT_ID = resolve_client_id()
 
 def post(path: str, payload: dict):
     """HTTP POST请求工具"""
