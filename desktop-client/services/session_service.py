@@ -7,25 +7,35 @@ import threading
 import uuid
 from contextlib import contextmanager
 from typing import Callable, Dict, Iterator, Optional, TypeVar
+
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
+
 from models import OzonAccount, BrowserSession
 
 T = TypeVar("T")
 
 
 class SessionService:
-    """会话管理服务 - 管理多账号的浏览器会话"""
+    """会话管理服务 - 复用全局 Browser，按账号隔离 BrowserContext。"""
 
     def __init__(self, logger_func):
         self.sessions: Dict[str, BrowserSession] = {}
         self._session_locks: Dict[str, threading.RLock] = {}
         self._locks_guard = threading.Lock()
+        self._browser_guard = threading.RLock()
         self._logger = logger_func
+
+        self._shared_playwright = None
+        self._shared_browser = None
+        self._shared_browser_instance_id = ""
+        self._shared_browser_config = None
+
         self._ensure_dirs()
 
     def _ensure_dirs(self):
         from services.utils import ensure_dirs
+
         ensure_dirs()
 
     def _get_account_lock(self, email: str) -> threading.RLock:
@@ -50,8 +60,14 @@ class SessionService:
         with self.account_session_scope(email, operation):
             return action()
 
-    def get_session(self, account: OzonAccount, headless: bool = False, slow_mo: int = 200, storage_state: str = None) -> BrowserSession:
-        """获取或创建账号的浏览器会话"""
+    def get_session(
+        self,
+        account: OzonAccount,
+        headless: bool = False,
+        slow_mo: int = 200,
+        storage_state: str = None,
+    ) -> BrowserSession:
+        """获取或创建账号的浏览器会话。"""
         with self.account_session_scope(account.email, "获取会话"):
             if account.email in self.sessions:
                 session = self.sessions[account.email]
@@ -59,13 +75,13 @@ class SessionService:
                     self._refresh_page_registry(session)
                     self._ensure_primary_page(session)
                     self._logger(
-                        f"✅ 复用已存在的会话: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+                        f"✅ 复用已存在的账号上下文: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
                     )
                     session.last_activity = time.time()
                     return session
 
                 self._logger(
-                    f"⚠️ 会话已失效，创建新会话: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+                    f"⚠️ 账号上下文已失效，重新创建: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
                 )
                 self._close_session(session)
 
@@ -75,6 +91,48 @@ class SessionService:
 
     def _new_page_id(self) -> str:
         return uuid.uuid4().hex[:10]
+
+    def _build_browser_config(self, headless: bool, slow_mo: int) -> dict:
+        return {
+            "headless": headless,
+            "slow_mo": slow_mo,
+            "args": [
+                "--disable-gpu",
+                "--start-maximized",
+            ],
+        }
+
+    def _ensure_shared_browser(self, headless: bool, slow_mo: int):
+        desired_config = self._build_browser_config(headless=headless, slow_mo=slow_mo)
+
+        with self._browser_guard:
+            if self._shared_browser and self._is_browser_alive(self._shared_browser):
+                if self._shared_browser_config != desired_config:
+                    self._logger(
+                        "ℹ️ 检测到新的浏览器启动参数请求，继续复用现有全局 Browser "
+                        f"(current={self._shared_browser_config}, requested={desired_config})"
+                    )
+                return self._shared_browser
+
+            self._logger("🚀 正在启动全局共享 Browser 实例")
+            self._shared_playwright = sync_playwright().start()
+            self._shared_browser = self._shared_playwright.chromium.launch(**desired_config)
+            self._shared_browser_config = desired_config
+            self._shared_browser_instance_id = uuid.uuid4().hex[:12]
+            self._logger(
+                "✅ 全局共享 Browser 启动成功: "
+                f"browser_instance_id={self._shared_browser_instance_id}, config={desired_config}"
+            )
+            return self._shared_browser
+
+    def _is_browser_alive(self, browser) -> bool:
+        if not browser:
+            return False
+        try:
+            _ = browser.contexts
+            return True
+        except Exception:
+            return False
 
     def _refresh_page_registry(self, session: BrowserSession) -> None:
         """同步 session 中记录的页面集合，允许一个 context 维护多个标签页。"""
@@ -150,7 +208,12 @@ class SessionService:
         if not session.context:
             return None
 
-        primary = self._create_managed_page(session, role="primary", operation_name="restore_primary_page", make_primary=True)
+        primary = self._create_managed_page(
+            session,
+            role="primary",
+            operation_name="restore_primary_page",
+            make_primary=True,
+        )
         return primary
 
     def _is_page_alive(self, page) -> bool:
@@ -163,8 +226,19 @@ class SessionService:
         except Exception:
             return False
 
-    def create_managed_page(self, session: BrowserSession, role: str = "task", operation_name: str = "操作", make_primary: bool = False):
-        page = self._create_managed_page(session, role=role, operation_name=operation_name, make_primary=make_primary)
+    def create_managed_page(
+        self,
+        session: BrowserSession,
+        role: str = "task",
+        operation_name: str = "操作",
+        make_primary: bool = False,
+    ):
+        page = self._create_managed_page(
+            session,
+            role=role,
+            operation_name=operation_name,
+            make_primary=make_primary,
+        )
         self._logger(
             f"🪟 已创建标签页: email={session.email}, role={role}, operation={operation_name}, total_pages={len(session.pages)}"
         )
@@ -207,8 +281,11 @@ class SessionService:
         session.touch()
 
     def _is_session_alive(self, session: BrowserSession) -> bool:
-        """检查会话是否有效"""
+        """检查会话是否有效。"""
         if not session.is_alive or not session.context:
+            return False
+
+        if not self._is_browser_alive(self._shared_browser):
             return False
 
         try:
@@ -223,32 +300,26 @@ class SessionService:
             return False
 
     def _create_session(self, account: OzonAccount, headless: bool, slow_mo: int, storage_state: str = None) -> BrowserSession:
-        """创建新的浏览器会话"""
+        """创建新的账号级 BrowserContext，会复用全局 Browser。"""
+        browser = self._ensure_shared_browser(headless=headless, slow_mo=slow_mo)
         session = BrowserSession(
             email=account.email,
-            storage_path=account.storage_path
+            storage_path=account.storage_path,
+            browser_instance_id=self._shared_browser_instance_id,
         )
         self._logger(
-            f"🚀 正在启动新的浏览器会话: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+            f"🚀 正在创建账号上下文: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
         )
 
-        session.playwright = sync_playwright().start()
-        session.browser = session.playwright.chromium.launch(
-            headless=headless,
-            slow_mo=slow_mo,
-            args=[
-                "--disable-gpu",
-                "--start-maximized",
-            ],
-        )
-
-        # 加载已有的登录状态
         if storage_state is None and os.path.exists(account.storage_path):
             storage_state = account.storage_path
 
-        session.context = session.browser.new_context(
+        session.context = browser.new_context(
             storage_state=storage_state,
-            user_agent=os.environ.get("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"),
+            user_agent=os.environ.get(
+                "USER_AGENT",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            ),
             viewport={"width": 1600, "height": 900},
             locale="ru-RU",
             timezone_id="Europe/Moscow",
@@ -263,23 +334,22 @@ class SessionService:
             make_primary=True,
         )
 
-        session.is_alive = True
-        session.last_activity = time.time()
-
+        session.mark_alive()
         self._logger(
-            f"✅ 会话创建成功: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+            f"✅ 账号上下文创建成功: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
         )
         return session
 
     def _close_session(self, session: BrowserSession):
-        """关闭会话"""
+        """关闭账号级会话，仅销毁其 Context/Page，不关闭共享 Browser。"""
         self._logger(
-            f"🛑 正在关闭会话: email={session.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+            f"🛑 正在关闭账号上下文: email={session.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
         )
 
         try:
             if session.context:
                 from services.utils import save_login_state
+
                 save_login_state(session.context, session.storage_path)
         except Exception as e:
             self._logger(f"⚠️ 保存登录态失败: {e}")
@@ -301,39 +371,56 @@ class SessionService:
         except Exception:
             pass
 
-        try:
-            if session.browser:
-                session.browser.close()
-        except Exception:
-            pass
+        session.context = None
+        session.mark_dead()
+        self._cleanup_shared_browser_if_idle()
 
-        try:
-            if session.playwright:
-                session.playwright.stop()
-        except Exception:
-            pass
+    def _cleanup_shared_browser_if_idle(self):
+        with self._browser_guard:
+            if any(session.is_alive and session.context for session in self.sessions.values()):
+                return
 
-        session.is_alive = False
+            if self._shared_browser:
+                try:
+                    self._shared_browser.close()
+                except Exception:
+                    pass
+                self._shared_browser = None
+
+            if self._shared_playwright:
+                try:
+                    self._shared_playwright.stop()
+                except Exception:
+                    pass
+                self._shared_playwright = None
+
+            if self._shared_browser_instance_id:
+                self._logger(
+                    f"🧹 全局共享 Browser 已释放: browser_instance_id={self._shared_browser_instance_id}"
+                )
+
+            self._shared_browser_instance_id = ""
+            self._shared_browser_config = None
 
     def close_all_sessions(self):
-        """关闭所有会话"""
+        """关闭所有会话。"""
         with self._locks_guard:
             emails = list(self.sessions.keys())
         for email in emails:
             self.close_session(email)
 
     def close_session(self, email: str):
-        """关闭指定邮箱的浏览器会话"""
+        """关闭指定邮箱的浏览器会话。"""
         with self.account_session_scope(email, "关闭会话"):
             session = self.sessions.pop(email, None)
             if session:
                 self._close_session(session)
 
     def _attach_debug_listeners(self, page):
-        """添加调试监听器"""
+        """添加调试监听器。"""
+
         def on_request(request):
             try:
-                # self._logger(f"[REQUEST] {request.method} {request.url}")
                 if request.method in ("POST", "PUT", "PATCH"):
                     data = request.post_data
                     if data:
@@ -343,7 +430,6 @@ class SessionService:
 
         def on_response(response):
             try:
-                # self._logger(f"[RESPONSE] {response.status} {response.url}")
                 url = response.url.lower()
 
                 if any(
