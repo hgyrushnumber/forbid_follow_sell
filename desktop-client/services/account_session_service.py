@@ -5,6 +5,7 @@ import os
 from typing import Callable
 
 from models import BrowserSession, OzonAccount
+from services.constants import MENU_BUTTONS
 
 
 class AccountSessionService:
@@ -120,6 +121,48 @@ class AccountSessionService:
     def save_after_task(self, session: BrowserSession, storage_path: str) -> None:
         self._save_login_state(session.context, storage_path)
 
+
+    def _find_reusable_task_page(self, session: BrowserSession):
+        self._session_service._refresh_page_registry(session)
+
+        candidates = []
+        for page_id, page in session.pages.items():
+            meta = session.page_meta.get(page_id) or {}
+            candidates.append((meta.get("last_used_at", 0), page_id, page, meta))
+
+        candidates.sort(reverse=True)
+
+        for _, page_id, page, meta in candidates:
+            try:
+                if self._page_service.is_reusable_task_page(page, MENU_BUTTONS):
+                    if page is session.page:
+                        self._session_service.tag_existing_page(
+                            session,
+                            page,
+                            role=meta.get("role") or "primary",
+                            operation_name=meta.get("operation_name") or "reuse_existing_task_page",
+                        )
+                    else:
+                        self._session_service.tag_existing_page(
+                            session,
+                            page,
+                            role="reused_task",
+                            operation_name=meta.get("operation_name") or "reuse_existing_task_page",
+                        )
+                    try:
+                        page.bring_to_front()
+                    except Exception:
+                        pass
+                    self._logger(
+                        f"♻️ 复用已存在任务标签页: email={session.email}, page_id={page_id}, url={page.url}"
+                    )
+                    session.touch()
+                    return page
+            except Exception as exc:
+                self._logger(f"⚠️ 检查候选任务标签页失败: page_id={page_id}, error={exc}")
+
+        return None
+
     def acquire_task_page(
         self,
         account: OzonAccount,
@@ -131,6 +174,12 @@ class AccountSessionService:
 
         def _prepare_task_page():
             session = self.ensure_ready(account, headless=headless, slow_mo=slow_mo)
+
+            reusable_page = self._find_reusable_task_page(session)
+            if reusable_page is not None:
+                self._logger(f"🪟 复用任务标签页就绪: {reusable_page.url}")
+                return session, reusable_page
+
             task_page = self._session_service.create_managed_page(
                 session,
                 role="task",
@@ -139,7 +188,7 @@ class AccountSessionService:
             )
             task_page.goto(self._target_url, wait_until="domcontentloaded", timeout=60000)
             self._sleep(3000)
-            self._logger(f"🪟 任务标签页已就绪: {task_page.url}")
+            self._logger(f"🪟 新任务标签页已就绪: {task_page.url}")
             return session, task_page
 
         return self._session_service.run_serialized(account.email, "申请任务标签页", _prepare_task_page)
