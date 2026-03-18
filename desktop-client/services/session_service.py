@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import hashlib
 import os
 import queue
 import threading
@@ -30,44 +29,11 @@ class SessionService:
         self._logger = logger_func
         self._local = threading.local()
         self._ensure_dirs()
-        self._start_workers()
 
     def _ensure_dirs(self):
         from services.utils import ensure_dirs
 
         ensure_dirs()
-
-    def _start_workers(self) -> None:
-        for index in range(self._worker_count):
-            worker = threading.Thread(
-                target=self._worker_loop,
-                args=(index,),
-                name=f"session-worker-{index}",
-                daemon=True,
-            )
-            worker.start()
-            self._worker_threads.append(worker)
-        self._logger(f"🧵 会话工作线程池已启动: count={self._worker_count}")
-
-    def _worker_loop(self, worker_index: int) -> None:
-        self._local.worker_index = worker_index
-        current_thread = threading.current_thread()
-        self._logger(f"🧵 会话工作线程启动: {current_thread.name}({current_thread.ident})")
-
-        while True:
-            task = self._worker_queues[worker_index].get()
-            event = task["event"]
-            try:
-                result = self._execute_serialized(task["email"], task["operation"], task["action"])
-                task["result"] = result
-            except Exception as exc:
-                task["exception"] = exc
-            finally:
-                event.set()
-
-    def _assign_worker_index(self, email: str) -> int:
-        digest = hashlib.md5(email.strip().lower().encode("utf-8")).hexdigest()
-        return int(digest[:8], 16) % self._worker_count
 
     def _get_account_lock(self, email: str) -> threading.RLock:
         with self._locks_guard:
@@ -192,57 +158,6 @@ class SessionService:
 
     def _new_page_id(self) -> str:
         return uuid.uuid4().hex[:10]
-
-    def _build_browser_config(self, headless: bool, slow_mo: int) -> dict:
-        return {
-            "headless": headless,
-            "slow_mo": slow_mo,
-            "args": [
-                "--disable-gpu",
-                "--start-maximized",
-            ],
-        }
-
-    def _ensure_thread_browser(self, headless: bool, slow_mo: int):
-        desired_config = self._build_browser_config(headless=headless, slow_mo=slow_mo)
-        thread_id = threading.get_ident()
-        thread_name = threading.current_thread().name
-
-        with self._browser_guard:
-            entry = self._thread_browsers.get(thread_id)
-            if entry and self._is_browser_alive(entry.get("browser")):
-                if entry.get("config") != desired_config:
-                    self._logger(
-                        "ℹ️ 当前工作线程检测到新的浏览器启动参数请求，继续复用该线程已有 Browser "
-                        f"(thread={thread_name}({thread_id}), current={entry.get('config')}, requested={desired_config})"
-                    )
-                return entry
-
-            self._logger(f"🚀 正在启动线程级共享 Browser: thread={thread_name}({thread_id})")
-            playwright = sync_playwright().start()
-            browser = playwright.chromium.launch(**desired_config)
-            entry = {
-                "playwright": playwright,
-                "browser": browser,
-                "config": desired_config,
-                "browser_instance_id": uuid.uuid4().hex[:12],
-                "thread_name": thread_name,
-            }
-            self._thread_browsers[thread_id] = entry
-            self._logger(
-                "✅ 线程级共享 Browser 启动成功: "
-                f"thread={thread_name}({thread_id}), browser_instance_id={entry['browser_instance_id']}, config={desired_config}"
-            )
-            return entry
-
-    def _is_browser_alive(self, browser) -> bool:
-        if not browser:
-            return False
-        try:
-            _ = browser.contexts
-            return True
-        except Exception:
-            return False
 
     def _refresh_page_registry(self, session: BrowserSession) -> None:
         """同步 session 中记录的页面集合，允许一个 BrowserContext 维护多个标签页。"""
@@ -402,14 +317,6 @@ class SessionService:
         if not session.belongs_to_current_thread():
             return False
 
-        if not session.belongs_to_current_thread():
-            return False
-
-        with self._browser_guard:
-            browser_entry = self._thread_browsers.get(session.owner_thread_id)
-        if not browser_entry or not self._is_browser_alive(browser_entry.get("browser")):
-            return False
-
         try:
             primary = self._ensure_primary_page(session)
             if not primary:
@@ -447,7 +354,7 @@ class SessionService:
         if storage_state is None and os.path.exists(account.storage_path):
             storage_state = account.storage_path
 
-        session.context = browser_entry["browser"].new_context(
+        session.context = session.browser.new_context(
             storage_state=storage_state,
             user_agent=os.environ.get(
                 "USER_AGENT",
@@ -472,18 +379,6 @@ class SessionService:
             f"✅ 邮箱级浏览器会话创建成功: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
         )
         return session
-
-    def _abandon_session(self, session: BrowserSession) -> None:
-        """放弃不可安全跨线程关闭的会话引用，避免触发 Playwright 线程错误。"""
-        self._logger(
-            "⚠️ 检测到跨线程旧会话，已放弃旧引用并将在新工作线程重建: "
-            f"email={session.email}, old_thread={session.owner_thread_name}({session.owner_thread_id}), browser_instance_id={session.browser_instance_id}"
-        )
-        session.context = None
-        session.page = None
-        session.pages.clear()
-        session.page_meta.clear()
-        session.mark_dead()
 
     def _close_session(self, session: BrowserSession):
         """关闭邮箱级会话，销毁该邮箱独占的 Browser / Context / Page。"""
