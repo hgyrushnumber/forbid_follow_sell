@@ -14,26 +14,20 @@ from tkinter import simpledialog
 from services.session_service import SessionService
 from services.account_session_service import AccountSessionService
 from services.page_service import PageService
-from services.sku_service import SkuService
 from services.utils import ensure_dirs, log, sleep, set_logger
-from services.session_service import SessionService
-from services.account_session_service import AccountSessionService
-from services.page_service import PageService
-from services.sku_service import SkuService
 from services.page_state_detector import detect_page_type as _detect_page_type, is_messenger_page as _is_messenger_page
-from services.utils import ensure_dirs
+from services.constants import (
+    TARGET_URL,
+    DASHBOARD_URL,
+    HOME_URL,
+    HEADLESS,
+    SLOW_MO,
+    MENU_BUTTONS
+)
 if getattr(sys, "frozen", False):
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(sys._MEIPASS, "ms-playwright")
 
-# =========================
-# 配置常量
-# =========================
-HEADLESS = False
-SLOW_MO = 200
-
-TARGET_URL = "https://seller.ozon.ru/app/messenger?channel=SCRM"
-DASHBOARD_URL = "https://seller.ozon.ru/app/dashboard/main"
-HOME_URL = "https://seller.ozon.ru/"
+# 配置常量已从services.constants导入
 
 
 # =========================
@@ -53,9 +47,10 @@ def set_logger(logger_func: Callable[[str], None]):
     # 延迟导入避免循环依赖
     
 
-    # 初始化服务
+    # 初始化服务，使用延迟导入避免循环依赖
     session_service = SessionService(logger_func)
     page_service = PageService(logger_func)
+    from services.sku_service import SkuService
     sku_service = SkuService(logger_func)
     account_session_service = AccountSessionService(
         logger_func=logger_func,
@@ -1444,7 +1439,7 @@ def run_task_with_skus(
         log(f"登录完成后页面: {task_page.url}")
         log(f"登录完成后标题: {task_page.title()}")
 
-        from services.sku_service import MENU_BUTTONS
+        from services.constants import MENU_BUTTONS
         summary = sku_service.execute(task_page, normalized_skus, image_path, MENU_BUTTONS)
 
         account_session_service.save_after_task(session, account.storage_path)

@@ -13,11 +13,7 @@ DEFAULT_STORAGE_DIR = "accounts"
 VIDEO_DIR = "videos"
 DEBUG_DIR = "debug_artifacts"
 
-MENU_BUTTONS = [
-    {"text": "商品和价格", "ru_text": "Товары и цены"},
-    {"text": "质量监督", "ru_text": "Контроль качества"},
-    {"text": "卖家使用我的品牌", "ru_text": "Продавцы используют мой бренд"},
-]
+# MENU_BUTTONS常量已移至services.constants模块
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -207,12 +203,4 @@ def find_visible_by_xpaths(page, selectors: List[str], timeout_ms: int = 4000):
     return None
 
 
-def get_latest_ozon_mail_id():
-    # 这里需要导入email_otp的函数，或者直接保留原逻辑
-    from email_otp import get_latest_mail_id as get_latest_ozon_mail_id_internal
-    return get_latest_ozon_mail_id_internal()
-
-
-def get_otp_from_email(request_time, min_mail_id, max_wait_seconds, email_account, email_password):
-    from email_otp import get_otp_from_email
-    return get_otp_from_email(request_time, min_mail_id, max_wait_seconds, email_account, email_password)
+# IMAP相关功能已全部删除，如需恢复请查看历史版本

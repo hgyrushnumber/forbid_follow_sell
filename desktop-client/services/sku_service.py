@@ -5,8 +5,9 @@ import time
 from typing import Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 from services.page_service import PageService
-from services.utils import sleep, MENU_BUTTONS
-from ozon_core import TARGET_URL
+from services.utils import sleep
+from services.constants import MENU_BUTTONS
+from services.constants import TARGET_URL
 
 
 class SkuService:
