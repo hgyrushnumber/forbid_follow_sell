@@ -56,7 +56,7 @@ def ensure_account_session_ready(
     account = OzonAccount(email, storage_path)
     return account_session_service.ensure_ready(account, headless=headless, slow_mo=slow_mo)
 
-
+# slow_mo的意思是：慢动作（slow motion）延迟时间
 def prepare_browser(
     email: str,
     storage_path: str = None,

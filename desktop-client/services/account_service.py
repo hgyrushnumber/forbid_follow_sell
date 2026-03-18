@@ -65,6 +65,7 @@ class AccountService:
 
     def login_account_thread(self, account: AccountInfo):
         """账号登录线程"""
+        # 对应实体类的操作
         if not account.validate():
             self.append_log(f"❌ 账号信息不完整: {account.email}")
             account.login_status = "登录失败"

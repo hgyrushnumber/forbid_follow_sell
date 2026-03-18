@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
 from typing import Callable
 
 from models import BrowserSession, OzonAccount
@@ -32,6 +33,25 @@ class AccountSessionService:
         except Exception as exc:
             self._logger(f"⚠️ 保存登录态失败: {exc}")
 
+    def is_account_logged_in(self, page):
+        """更严格的登录状态校验"""
+        try:
+            url = page.url.lower()
+            # 检查是否在卖家后台页面
+            if "/app/dashboard" in url or "/app/messenger" in url:
+                # 检查页面是否包含卖家后台特有的元素
+                from services.utils import safe_body_text
+                body_text = safe_body_text(page)
+                return (
+                    "Товары и цены" in body_text or  # 商品和价格（俄文）
+                    "商品和价格" in body_text or      # 商品和价格（中文）
+                    "seller.ozon.ru/app/messenger" in url    # 确保在卖家后台路径下
+                )
+            return False
+        except Exception as e:
+            self._logger(f"⚠️ 登录状态校验失败: {e}")
+            return False
+
     def ensure_ready(
         self,
         account: OzonAccount,
@@ -41,24 +61,47 @@ class AccountSessionService:
         """确保账号对应的唯一浏览器会话已经就绪。"""
 
         def _prepare() -> BrowserSession:
+            self._logger(f"🔍 正在准备账号会话: {account.email}")
             session = self._session_service.get_session(account, headless, slow_mo)
             primary_page = self._session_service._ensure_primary_page(session)
 
             if not self._session_service._is_session_alive(session):
                 raise RuntimeError("浏览器页面不可用")
 
+            # 严格校验登录状态
             try:
-                current_type = self._page_service.detect_page_type(primary_page)
-            except Exception:
-                current_type = "unknown"
-
-            if current_type not in ("messenger", "company_select", "login", "ozon_id_phone", "otp"):
+                # 导航到目标页面
                 primary_page.goto(self._target_url, wait_until="domcontentloaded", timeout=60000)
                 self._sleep(3000)
 
-            self._logger(f"当前页面: {primary_page.url}")
-            self._logger(f"当前标题: {primary_page.title()}")
+                # 等待页面跳转到目标URL模式
+                try:
+                    # 先等待dashboard页面
+                    primary_page.wait_for_url("**/app/dashboard**", wait_until="load", timeout=30000)
+                except Exception:
+                    try:
+                        # 再等待messenger页面
+                        primary_page.wait_for_url("**/app/messenger**", wait_until="load", timeout=30000)
+                    except Exception:
+                        self._logger("⚠️ 页面未跳转到预期的URL模式（/app/dashboard 或 /app/messenger）")
+                self._sleep(3000)
 
+                if self.is_account_logged_in(primary_page):
+                    self._logger("✅ 会话已登录并就绪")
+                    self._page_service.normalize_messenger_home(primary_page, self._target_url)
+                    session.touch()
+                    return session
+                else:
+                    self._logger("⚠️ 检测到未登录页面，将启动登录流程")
+                    # 清理失效的登录态文件
+                    if os.path.exists(account.storage_path):
+                        os.remove(account.storage_path)
+
+            except Exception as e:
+                self._logger(f"⚠️ 页面导航或状态检测失败: {e}")
+
+            # 无效登录态，启动完整登录流程
+            self._logger("🔄 启动完整登录流程")
             self._page_service.ensure_logged_in_and_ready(
                 primary_page,
                 session.context,
@@ -69,7 +112,7 @@ class AccountSessionService:
             self._page_service.normalize_messenger_home(primary_page, self._target_url)
 
             session.touch()
-            self._logger(f"浏览器准备完成，当前页面: {primary_page.url}")
+            self._logger("✅ 登录流程完成，会话已就绪")
             return session
 
         return self._session_service.run_serialized(account.email, "准备账号会话", _prepare)

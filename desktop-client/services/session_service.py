@@ -50,7 +50,7 @@ class SessionService:
         with self.account_session_scope(email, operation):
             return action()
 
-    def get_session(self, account: OzonAccount, headless: bool = False, slow_mo: int = 200) -> BrowserSession:
+    def get_session(self, account: OzonAccount, headless: bool = False, slow_mo: int = 200, storage_state: str = None) -> BrowserSession:
         """获取或创建账号的浏览器会话"""
         with self.account_session_scope(account.email, "获取会话"):
             if account.email in self.sessions:
@@ -69,7 +69,7 @@ class SessionService:
                 )
                 self._close_session(session)
 
-            session = self._create_session(account, headless, slow_mo)
+            session = self._create_session(account, headless, slow_mo, storage_state)
             self.sessions[account.email] = session
             return session
 
@@ -222,7 +222,7 @@ class SessionService:
             self._logger(f"⚠️ 会话检查失败: {e}")
             return False
 
-    def _create_session(self, account: OzonAccount, headless: bool, slow_mo: int) -> BrowserSession:
+    def _create_session(self, account: OzonAccount, headless: bool, slow_mo: int, storage_state: str = None) -> BrowserSession:
         """创建新的浏览器会话"""
         session = BrowserSession(
             email=account.email,
@@ -243,7 +243,8 @@ class SessionService:
         )
 
         # 加载已有的登录状态
-        storage_state = account.storage_path if os.path.exists(account.storage_path) else None
+        if storage_state is None and os.path.exists(account.storage_path):
+            storage_state = account.storage_path
 
         session.context = session.browser.new_context(
             storage_state=storage_state,
@@ -332,7 +333,7 @@ class SessionService:
         """添加调试监听器"""
         def on_request(request):
             try:
-                self._logger(f"[REQUEST] {request.method} {request.url}")
+                # self._logger(f"[REQUEST] {request.method} {request.url}")
                 if request.method in ("POST", "PUT", "PATCH"):
                     data = request.post_data
                     if data:
@@ -342,7 +343,7 @@ class SessionService:
 
         def on_response(response):
             try:
-                self._logger(f"[RESPONSE] {response.status} {response.url}")
+                # self._logger(f"[RESPONSE] {response.status} {response.url}")
                 url = response.url.lower()
 
                 if any(
