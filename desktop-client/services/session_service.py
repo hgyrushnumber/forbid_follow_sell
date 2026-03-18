@@ -387,8 +387,6 @@ class SessionService:
             viewport={"width": 1600, "height": 900},
             locale="ru-RU",
             timezone_id="Europe/Moscow",
-            record_video_dir=os.environ.get("VIDEO_DIR", "videos"),
-            record_video_size={"width": 1280, "height": 720},
         )
 
         session.page = self._create_managed_page(

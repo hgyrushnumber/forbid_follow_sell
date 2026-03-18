@@ -1,7 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_data_files
 
-datas = [('accounts', 'accounts'), ('accounts_config.json', '.'), ('ozon_accounts_config.json', '.'), ('ozon_auth.json', '.'), ('C:\\Users\\ASUS\\AppData\\Local\\ms-playwright\\chromium-1187', 'ms-playwright\\chromium-1187'), ('C:\\Users\\ASUS\\AppData\\Local\\ms-playwright\\ffmpeg-1011', 'ms-playwright\\ffmpeg-1011')]
+datas = [
+    ('accounts', 'accounts'),
+    ('accounts_config.json', '.'),
+    ('ozon_accounts_config.json', '.'),
+    ('ozon_auth.json', '.'),
+    ('C:\\Users\\ASUS\\AppData\\Local\\ms-playwright\\chromium-1187', 'ms-playwright\\chromium-1187'),
+]
 datas += collect_data_files('playwright_stealth')
 
 
