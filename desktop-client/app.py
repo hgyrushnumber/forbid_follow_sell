@@ -37,6 +37,7 @@ class OzonMultiApp:
         self.accounts: List[AccountInfo] = []
         self.client_id = resolve_client_id()
         self._heartbeat_stop = threading.Event()
+        self._shutdown_started = False
         self.log_file = os.environ.get("DESKTOP_LOG_FILE", os.path.join("logs", "desktop-client.log"))
 
         self.config_service = ConfigService()
@@ -98,7 +99,10 @@ class OzonMultiApp:
                 f.write(line + "\n")
         except Exception:
             pass
-        self.ui.append_log(line)
+        try:
+            self.root.after(0, lambda text=line: self.ui.append_log(text))
+        except Exception:
+            pass
 
     def load_accounts_config(self) -> None:
         self.accounts.clear()
@@ -252,19 +256,36 @@ class OzonMultiApp:
     def on_close(self) -> None:
         from tkinter import messagebox
 
+        if self._shutdown_started:
+            self.ui.set_status_message("⏳ 正在退出，后台仍在清理浏览器会话，请稍候")
+            return
+
         if messagebox.askyesno("确认", "确定要退出程序吗？"):
-            self._heartbeat_stop.set()
-            try:
-                self.dispatch_service.mark_client_offline()
-            except Exception:
-                pass
+            self._shutdown_started = True
+            self.ui.set_status_message("⏳ 正在退出：后台清理浏览器会话与分派状态…")
+            self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-            try:
-                close_all_sessions()
-            except Exception:
-                pass
+            def _shutdown():
+                self._heartbeat_stop.set()
+                self.append_log("🛑 收到退出请求，开始后台清理资源")
 
-            self.root.destroy()
+                try:
+                    self.dispatch_service.mark_client_offline()
+                except Exception as exc:
+                    self.append_log(f"⚠️ 标记客户端离线失败，将继续关闭本地会话: {exc}")
+
+                try:
+                    close_all_sessions()
+                except Exception as exc:
+                    self.append_log(f"⚠️ 关闭浏览器会话时出现异常: {exc}")
+
+                self.append_log("✅ 后台清理完成，准备退出程序")
+                try:
+                    self.root.after(0, self.root.destroy)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_shutdown, daemon=True, name="desktop-shutdown").start()
 
 
 def main() -> None:
