@@ -10,10 +10,10 @@ from typing import Any, Dict, Optional
 @dataclass
 class BrowserSession:
     """
-    浏览器会话模型。
+    邮箱级浏览器会话模型。
 
+    每个邮箱独占一个 Browser / BrowserContext，业务请求在该会话内创建新的 Page。
     这里只保存运行时对象引用，不做序列化。
-    Playwright 的对象类型在运行时注入，因此这里用 Any。
     """
 
     email: str
@@ -68,6 +68,9 @@ class BrowserSession:
 
     def has_browser(self) -> bool:
         return bool(self.browser_instance_id)
+
+    def belongs_to_current_thread(self) -> bool:
+        return self.owner_thread_id == threading.get_ident()
 
     def belongs_to_current_thread(self) -> bool:
         return self.owner_thread_id == threading.get_ident()

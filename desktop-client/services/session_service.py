@@ -19,21 +19,16 @@ T = TypeVar("T")
 
 
 class SessionService:
-    """会话管理服务 - 通过少量固定工作线程复用 Browser，并按账号隔离 BrowserContext。"""
+    """会话管理服务 - 每个邮箱独占一个 Browser，会话操作固定在该邮箱线程执行。"""
 
     def __init__(self, logger_func):
         self.sessions: Dict[str, BrowserSession] = {}
         self._session_locks: Dict[str, threading.RLock] = {}
+        self._workers: Dict[str, dict] = {}
         self._locks_guard = threading.Lock()
-        self._browser_guard = threading.RLock()
+        self._workers_guard = threading.Lock()
         self._logger = logger_func
-
-        self._thread_browsers: Dict[int, dict] = {}
-        self._worker_count = max(1, int(os.environ.get("SESSION_WORKER_COUNT", "2")))
-        self._worker_queues = [queue.Queue() for _ in range(self._worker_count)]
-        self._worker_threads = []
         self._local = threading.local()
-
         self._ensure_dirs()
         self._start_workers()
 
@@ -82,6 +77,55 @@ class SessionService:
                 self._session_locks[email] = lock
             return lock
 
+    def _ensure_worker(self, email: str) -> dict:
+        with self._workers_guard:
+            worker = self._workers.get(email)
+            if worker is not None:
+                return worker
+
+            task_queue: queue.Queue = queue.Queue()
+            ready = threading.Event()
+            worker = {
+                "email": email,
+                "queue": task_queue,
+                "ready": ready,
+                "thread": None,
+                "thread_id": None,
+                "thread_name": None,
+            }
+
+            thread = threading.Thread(
+                target=self._worker_loop,
+                args=(worker,),
+                name=f"session-email-{uuid.uuid4().hex[:8]}",
+                daemon=True,
+            )
+            worker["thread"] = thread
+            self._workers[email] = worker
+            thread.start()
+            ready.wait()
+            self._logger(
+                f"🧵 邮箱会话线程已启动: email={email}, thread={worker['thread_name']}({worker['thread_id']})"
+            )
+            return worker
+
+    def _worker_loop(self, worker: dict) -> None:
+        worker["thread_id"] = threading.get_ident()
+        worker["thread_name"] = threading.current_thread().name
+        self._local.worker_email = worker["email"]
+        worker["ready"].set()
+
+        while True:
+            task = worker["queue"].get()
+            event = task["event"]
+            try:
+                result = self._execute_serialized(task["email"], task["operation"], task["action"])
+                task["result"] = result
+            except Exception as exc:
+                task["exception"] = exc
+            finally:
+                event.set()
+
     @contextmanager
     def account_session_scope(self, email: str, operation: str = "操作") -> Iterator[None]:
         """按邮箱串行化会话操作，确保同邮箱同一时刻只有一个流程可运行。"""
@@ -96,12 +140,12 @@ class SessionService:
             return action()
 
     def run_serialized(self, email: str, operation: str, action: Callable[[], T]) -> T:
-        """在账号绑定的固定工作线程中串行执行操作。"""
-        worker_index = self._assign_worker_index(email)
-        current_worker_index = getattr(self._local, "worker_index", None)
-        if current_worker_index == worker_index:
+        """在邮箱绑定的固定线程中串行执行操作。"""
+        current_email = getattr(self._local, "worker_email", None)
+        if current_email == email:
             return self._execute_serialized(email, operation, action)
 
+        worker = self._ensure_worker(email)
         event = threading.Event()
         task = {
             "email": email,
@@ -111,7 +155,7 @@ class SessionService:
             "result": None,
             "exception": None,
         }
-        self._worker_queues[worker_index].put(task)
+        worker["queue"].put(task)
         event.wait()
         if task["exception"] is not None:
             raise task["exception"]
@@ -126,31 +170,21 @@ class SessionService:
     ) -> BrowserSession:
         """获取或创建账号的浏览器会话。"""
         with self.account_session_scope(account.email, "获取会话"):
-            current_thread_id = threading.get_ident()
-            current_thread_name = threading.current_thread().name
-
-            if account.email in self.sessions:
-                session = self.sessions[account.email]
-                if session.owner_thread_id != current_thread_id:
-                    self._logger(
-                        "ℹ️ 检测到账号会话线程归属变化，准备重建上下文: "
-                        f"email={account.email}, from_thread={session.owner_thread_name}({session.owner_thread_id}), "
-                        f"to_thread={current_thread_name}({current_thread_id})"
-                    )
-                    self._abandon_session(session)
-                elif self._is_session_alive(session):
+            session = self.sessions.get(account.email)
+            if session:
+                if self._is_session_alive(session):
                     self._refresh_page_registry(session)
                     self._ensure_primary_page(session)
                     self._logger(
-                        f"✅ 复用已存在的账号上下文: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}, thread={session.owner_thread_name}({session.owner_thread_id})"
+                        f"✅ 复用邮箱级浏览器会话: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
                     )
-                    session.last_activity = time.time()
+                    session.touch()
                     return session
-                else:
-                    self._logger(
-                        f"⚠️ 账号上下文已失效，重新创建: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
-                    )
-                    self._close_session(session)
+
+                self._logger(
+                    f"⚠️ 邮箱级浏览器会话已失效，重新创建: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+                )
+                self._close_session(session)
 
             session = self._create_session(account, headless, slow_mo, storage_state)
             self.sessions[account.email] = session
@@ -211,7 +245,7 @@ class SessionService:
             return False
 
     def _refresh_page_registry(self, session: BrowserSession) -> None:
-        """同步 session 中记录的页面集合，允许一个 context 维护多个标签页。"""
+        """同步 session 中记录的页面集合，允许一个 BrowserContext 维护多个标签页。"""
         if not session.context:
             session.pages.clear()
             session.page_meta.clear()
@@ -361,8 +395,11 @@ class SessionService:
         session.touch()
 
     def _is_session_alive(self, session: BrowserSession) -> bool:
-        """检查会话是否有效。"""
-        if not session.is_alive or not session.context:
+        """检查邮箱会话是否有效。"""
+        if not session.is_alive or not session.context or not session.browser:
+            return False
+
+        if not session.belongs_to_current_thread():
             return False
 
         if not session.belongs_to_current_thread():
@@ -377,6 +414,7 @@ class SessionService:
             primary = self._ensure_primary_page(session)
             if not primary:
                 return False
+            _ = session.browser.contexts
             _ = primary.url
             primary.title()
             return True
@@ -385,17 +423,25 @@ class SessionService:
             return False
 
     def _create_session(self, account: OzonAccount, headless: bool, slow_mo: int, storage_state: str = None) -> BrowserSession:
-        """创建新的账号级 BrowserContext，会复用当前工作线程上的 Browser。"""
-        browser_entry = self._ensure_thread_browser(headless=headless, slow_mo=slow_mo)
+        """创建新的邮箱级 Browser / BrowserContext。"""
         session = BrowserSession(
             email=account.email,
             storage_path=account.storage_path,
-            browser_instance_id=browser_entry["browser_instance_id"],
             owner_thread_id=threading.get_ident(),
             owner_thread_name=threading.current_thread().name,
         )
         self._logger(
-            f"🚀 正在创建账号上下文: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}, thread={session.owner_thread_name}({session.owner_thread_id})"
+            f"🚀 正在启动邮箱级浏览器会话: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}, thread={session.owner_thread_name}({session.owner_thread_id})"
+        )
+
+        session.playwright = sync_playwright().start()
+        session.browser = session.playwright.chromium.launch(
+            headless=headless,
+            slow_mo=slow_mo,
+            args=[
+                "--disable-gpu",
+                "--start-maximized",
+            ],
         )
 
         if storage_state is None and os.path.exists(account.storage_path):
@@ -423,7 +469,7 @@ class SessionService:
 
         session.mark_alive()
         self._logger(
-            f"✅ 账号上下文创建成功: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}, thread={session.owner_thread_name}({session.owner_thread_id})"
+            f"✅ 邮箱级浏览器会话创建成功: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
         )
         return session
 
@@ -440,9 +486,9 @@ class SessionService:
         session.mark_dead()
 
     def _close_session(self, session: BrowserSession):
-        """关闭账号级会话，仅销毁其 Context/Page；线程无活跃会话时再销毁该线程 Browser。"""
+        """关闭邮箱级会话，销毁该邮箱独占的 Browser / Context / Page。"""
         self._logger(
-            f"🛑 正在关闭账号上下文: email={session.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}, thread={session.owner_thread_name}({session.owner_thread_id})"
+            f"🛑 正在关闭邮箱级浏览器会话: email={session.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
         )
 
         try:
@@ -470,41 +516,22 @@ class SessionService:
         except Exception:
             pass
 
+        try:
+            if session.browser:
+                session.browser.close()
+        except Exception:
+            pass
+
+        try:
+            if session.playwright:
+                session.playwright.stop()
+        except Exception:
+            pass
+
         session.context = None
+        session.browser = None
+        session.playwright = None
         session.mark_dead()
-        self._cleanup_thread_browser_if_idle(session.owner_thread_id)
-
-    def _cleanup_thread_browser_if_idle(self, thread_id: int):
-        with self._browser_guard:
-            if any(
-                session.is_alive and session.context and session.owner_thread_id == thread_id
-                for session in self.sessions.values()
-            ):
-                return
-
-            entry = self._thread_browsers.pop(thread_id, None)
-            if not entry:
-                return
-
-            browser = entry.get("browser")
-            playwright = entry.get("playwright")
-
-            if browser:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
-
-            if playwright:
-                try:
-                    playwright.stop()
-                except Exception:
-                    pass
-
-            self._logger(
-                "🧹 线程级共享 Browser 已释放: "
-                f"thread={entry.get('thread_name')}({thread_id}), browser_instance_id={entry.get('browser_instance_id')}"
-            )
 
     def close_all_sessions(self):
         """关闭所有会话。"""
