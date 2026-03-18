@@ -2,5 +2,4 @@ tkinter
 playwright>=1.37.0
 requests>=2.31.0
 websockets>=11.0.3
-imapclient>=2.3.1
 

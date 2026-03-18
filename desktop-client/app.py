@@ -19,7 +19,6 @@ from services import ConfigService
 from services.dispatch_service import DispatchService
 from services.task_service import TaskService
 from services.account_service import AccountService
-from services.mail_service import get_latest_mail_id as _get_latest_mail_id
 from services.client_identity import resolve_client_id
 from ui.main_window import MainWindow
 from ozon_core import close_all_sessions, set_logger
@@ -28,11 +27,6 @@ from ozon_core import close_all_sessions, set_logger
 load_dotenv()
 
 DISPATCH_SERVER = os.environ.get("DISPATCH_SERVER", "https://www.rus2cn.com")
-
-
-def get_latest_mail_id(email_addr: str, email_pass: str, imap_server: str):
-    """兼容 AccountDialog 的导入路径。"""
-    return _get_latest_mail_id(email_addr, email_pass, imap_server)
 
 
 class OzonMultiApp:

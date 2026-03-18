@@ -7,10 +7,21 @@ from dataclasses import dataclass, field
 from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from playwright_stealth import Stealth
-
-from email_otp import get_otp_from_email, get_latest_ozon_mail_id
 import sys
 from models import OzonAccount, BrowserSession
+import tkinter as tk
+from tkinter import simpledialog
+from services.session_service import SessionService
+from services.account_session_service import AccountSessionService
+from services.page_service import PageService
+from services.sku_service import SkuService
+from services.utils import ensure_dirs, log, sleep, set_logger
+from services.session_service import SessionService
+from services.account_session_service import AccountSessionService
+from services.page_service import PageService
+from services.sku_service import SkuService
+from services.page_state_detector import detect_page_type as _detect_page_type, is_messenger_page as _is_messenger_page
+from services.utils import ensure_dirs
 if getattr(sys, "frozen", False):
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(sys._MEIPASS, "ms-playwright")
 
@@ -23,14 +34,6 @@ SLOW_MO = 200
 TARGET_URL = "https://seller.ozon.ru/app/messenger?channel=SCRM"
 DASHBOARD_URL = "https://seller.ozon.ru/app/dashboard/main"
 HOME_URL = "https://seller.ozon.ru/"
-
-from services.utils import ensure_dirs, log, sleep, set_logger
-from services.session_service import SessionService
-from services.account_session_service import AccountSessionService
-from services.page_service import PageService
-from services.sku_service import SkuService
-from services.page_state_detector import detect_page_type as _detect_page_type, is_messenger_page as _is_messenger_page
-
 
 
 # =========================
@@ -48,10 +51,7 @@ def set_logger(logger_func: Callable[[str], None]):
     _LOGGER = logger_func
 
     # 延迟导入避免循环依赖
-    from services.session_service import SessionService
-    from services.account_session_service import AccountSessionService
-    from services.page_service import PageService
-    from services.sku_service import SkuService
+    
 
     # 初始化服务
     session_service = SessionService(logger_func)
@@ -860,9 +860,6 @@ def login_with_email_otp(page, context, account: OzonAccount):
         return False
 
     if detect_page_type(page) != "otp":
-        baseline_mail_id = get_latest_ozon_mail_id()
-        log(f"提交前基线邮件 ID: {baseline_mail_id}")
-
         try:
             page.fill("input[type='email']", account.email)
             request_time = datetime.now(timezone.utc)
@@ -878,7 +875,6 @@ def login_with_email_otp(page, context, account: OzonAccount):
             dump_page_state(page, "error_submit_email")
             return False
     else:
-        baseline_mail_id = get_latest_ozon_mail_id()
         request_time = datetime.now(timezone.utc)
 
     try:
@@ -908,8 +904,7 @@ def login_with_email_otp(page, context, account: OzonAccount):
         return False
 
     # 强制采用手动输入验证码（不再尝试 IMAP 自动提取）
-    import tkinter as tk
-    from tkinter import simpledialog
+    
 
     root = tk.Tk()
     root.withdraw()
@@ -1418,7 +1413,6 @@ def run_task_with_skus(
     use_manual_login: bool = False,
 ):
     """执行任务 - 直接使用 SKU 列表发送图片"""
-    from services.utils import ensure_dirs
     ensure_dirs()
 
     if not os.path.exists(image_path):
