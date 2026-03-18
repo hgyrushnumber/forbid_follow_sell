@@ -27,6 +27,7 @@ class SessionService:
         if account.email in self.sessions:
             session = self.sessions[account.email]
             if self._is_session_alive(session):
+                self._enforce_single_tab(session)
                 self._logger(f"✅ 复用已存在的会话: {account.email}")
                 session.last_activity = time.time()
                 return session
@@ -35,8 +36,30 @@ class SessionService:
                 self._close_session(session)
 
         session = self._create_session(account, headless, slow_mo)
+        self._enforce_single_tab(session)
         self.sessions[account.email] = session
         return session
+
+    def _enforce_single_tab(self, session: BrowserSession) -> None:
+        """每个邮箱只保留一个标签页，关闭多余标签。"""
+        if not session.context:
+            return
+        try:
+            pages = list(session.context.pages)
+        except Exception:
+            return
+        if not pages:
+            return
+
+        primary = session.page if session.page in pages else pages[0]
+        for p in pages:
+            if p is primary:
+                continue
+            try:
+                p.close()
+            except Exception:
+                pass
+        session.page = primary
 
     def _is_session_alive(self, session: BrowserSession) -> bool:
         """检查会话是否有效"""
