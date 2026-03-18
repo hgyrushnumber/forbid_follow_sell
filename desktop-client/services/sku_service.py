@@ -39,13 +39,15 @@ class SkuService:
 
     def navigate_menu(self, page, menu_config):
         session_id = self._wait_chat_session_id(page)
+        if session_id and session_id in self._prepared_session_ids:
+            self._logger(f"ℹ️ 会话 {session_id} 已完成投诉入口点击，跳过菜单导航")
+            return session_id
+
         if session_id:
-            if session_id in self._prepared_session_ids:
-                self._logger(f"ℹ️ 会话 {session_id} 已完成投诉入口点击，跳过菜单导航")
-                return session_id
-            self._logger(f"ℹ️ 检测到投诉会话页 id={session_id}，执行一次菜单点击")
+            self._logger(f"ℹ️ 检测到未缓存的投诉会话页 id={session_id}，补做一次菜单点击")
         else:
             self.page_service.normalize_messenger_home(page, TARGET_URL)
+            self._logger("ℹ️ 当前尚未进入投诉会话页，将按菜单路径首次进入目标会话")
 
         for idx, item in enumerate(menu_config, 1):
             text = (item.get("text") or "").strip()
@@ -58,10 +60,13 @@ class SkuService:
             self._logger(f"🎯 菜单导航 {idx}/{len(menu_config)}: {text or ru_text}")
             self.page_service.click_menu_button(page, text or ru_text, ru_text or None)
 
-        if session_id:
-            self._prepared_session_ids.add(session_id)
-            self._logger(f"✅ 会话 {session_id} 已标记为完成投诉入口点击")
-        return session_id
+        resolved_session_id = session_id or self._wait_chat_session_id(page, timeout_ms=15000)
+        if resolved_session_id:
+            self._prepared_session_ids.add(resolved_session_id)
+            self._logger(f"✅ 会话 {resolved_session_id} 已标记为完成投诉入口点击")
+        else:
+            self._logger("⚠️ 菜单点击后仍未识别到投诉会话 id，本次不缓存会话状态")
+        return resolved_session_id
 
     def process_single_sku(self, page, sku: str, image_path: str):
         self._logger(f"📦 开始处理 SKU: {sku}")
