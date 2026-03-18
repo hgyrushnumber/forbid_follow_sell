@@ -8,6 +8,7 @@
 import os
 import threading
 import tkinter as tk
+from datetime import datetime
 
 from typing import List, Optional
 
@@ -42,6 +43,7 @@ class OzonMultiApp:
         self.accounts: List[AccountInfo] = []
         self.client_id = resolve_client_id()
         self._heartbeat_stop = threading.Event()
+        self.log_file = os.environ.get("DESKTOP_LOG_FILE", os.path.join("logs", "desktop-client.log"))
 
         self.config_service = ConfigService()
 
@@ -92,7 +94,14 @@ class OzonMultiApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def append_log(self, msg: str) -> None:
-        self.ui.append_log(msg)
+        line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+        try:
+            os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+        self.ui.append_log(line)
 
     def load_accounts_config(self) -> None:
         self.accounts.clear()

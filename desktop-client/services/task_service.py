@@ -45,7 +45,7 @@ class TaskService:
                     self.append_log(f"❌ 账号登录失败，跳过: {account.email}")
                     continue
 
-            run_task_with_skus(
+            summary = run_task_with_skus(
                 email=account.email,
                 skus=normalized_skus,
                 image_path=image_path,
@@ -55,6 +55,9 @@ class TaskService:
                 use_manual_login=account.use_manual_login,
             )
             self.append_log(f"✅ 本地任务执行完成: {account.email}")
+            self.append_log(
+                f"📊 {account.email} SKU统计: total={summary.get('total', 0)}, success={summary.get('success_count', 0)}, failed={summary.get('failed_count', 0)}"
+            )
 
     def run_task_from_dispatch(self, task: dict):
         """处理从分派服务拉取的任务"""
@@ -93,7 +96,7 @@ class TaskService:
 
             self.dispatch_service.mark_task_running(task["id"])
 
-            run_task_with_skus(
+            summary = run_task_with_skus(
                 email=target_account.email,
                 skus=skus,
                 image_path=image_path,
@@ -103,8 +106,19 @@ class TaskService:
                 use_manual_login=target_account.use_manual_login,
             )
 
-            self.dispatch_service.mark_task_complete(task_id, success=True, sku_count=len(skus))
-            self.append_log(f"✅ 任务 {task_id} 执行成功")
+            failed_count = int(summary.get("failed_count", 0))
+            success = failed_count == 0
+            error = "" if success else f"部分SKU处理失败，失败数量: {failed_count}"
+            self.dispatch_service.mark_task_complete(
+                task_id,
+                success=success,
+                error=error,
+                sku_count=int(summary.get("success_count", 0)),
+                result=summary,
+            )
+            self.append_log(
+                f"✅ 任务 {task_id} 执行完成: total={summary.get('total', 0)}, success={summary.get('success_count', 0)}, failed={failed_count}"
+            )
 
         except Exception as exc:
             self.append_log(f"❌ 任务执行失败: {str(exc)}")

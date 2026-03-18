@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 from services.page_service import PageService
-from services.utils import log, sleep, MENU_BUTTONS
+from services.utils import sleep, MENU_BUTTONS
 from ozon_core import TARGET_URL
 
 
@@ -42,7 +42,7 @@ class SkuService:
         if session_id:
             if session_id in self._prepared_session_ids:
                 self._logger(f"ℹ️ 会话 {session_id} 已完成投诉入口点击，跳过菜单导航")
-                return
+                return session_id
             self._logger(f"ℹ️ 检测到投诉会话页 id={session_id}，执行一次菜单点击")
         else:
             self.page_service.normalize_messenger_home(page, TARGET_URL)
@@ -61,6 +61,7 @@ class SkuService:
         if session_id:
             self._prepared_session_ids.add(session_id)
             self._logger(f"✅ 会话 {session_id} 已标记为完成投诉入口点击")
+        return session_id
 
     def process_single_sku(self, page, sku: str, image_path: str):
         self._logger(f"📦 开始处理 SKU: {sku}")
@@ -84,11 +85,32 @@ class SkuService:
         self.page_service.wait_for_upload_finished(page)
         self._logger(f"✅ SKU 处理完成: {sku}")
 
-    def execute(self, page, skus: List[str], image_path: str, menu_config):
-        self.navigate_menu(page, menu_config)
+    def execute(self, page, skus: List[str], image_path: str, menu_config) -> Dict[str, object]:
+        session_id = self.navigate_menu(page, menu_config)
         self._logger(f"✅ 菜单导航完成，开始处理 {len(skus)} 个 SKU")
+
+        success_items: List[str] = []
+        failed_items: List[Dict[str, str]] = []
 
         for i, sku in enumerate(skus, 1):
             self._logger(f"➡️ {i}/{len(skus)}")
-            self.process_single_sku(page, sku, image_path)
+            try:
+                self.process_single_sku(page, sku, image_path)
+                success_items.append(sku)
+            except Exception as exc:
+                failed_items.append({"sku": sku, "error": str(exc)})
+                self._logger(f"❌ SKU 处理失败: {sku}, 错误: {exc}")
             sleep(1200)
+
+        summary = {
+            "session_id": session_id,
+            "total": len(skus),
+            "success_count": len(success_items),
+            "failed_count": len(failed_items),
+            "success_skus": success_items,
+            "failed_items": failed_items,
+        }
+        self._logger(
+            f"📊 SKU执行统计: total={summary['total']}, success={summary['success_count']}, failed={summary['failed_count']}"
+        )
+        return summary
