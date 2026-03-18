@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import time
+from urllib.parse import parse_qs, urlparse
 from typing import List, Optional
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from services.utils import safe_body_text, log, sleep, escape_xpath_text, build_text_xpaths, find_visible_by_xpaths
@@ -28,6 +29,18 @@ class PageService:
         except Exception:
             url = ""
         return "/app/messenger/" in url and ("group=" in url or "id=" in url)
+
+    def is_support_v2_page(self, page) -> bool:
+        try:
+            url = page.url or ""
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+        except Exception:
+            return False
+
+        group = (query.get("group") or [""])[0].strip().lower()
+        session_id = (query.get("id") or [""])[0].strip()
+        return "/app/messenger/" in url and bool(session_id) and group == "support_v2"
 
     def normalize_messenger_home(self, page, TARGET_URL):
         if self.is_chat_detail_page(page):
@@ -108,6 +121,13 @@ class PageService:
             return True
 
         return self.has_support_compose_prompt(page) and self.has_visible_sku_input(page)
+
+    def is_reusable_support_task_page(self, page, menu_config) -> bool:
+        if not self.is_support_v2_page(page):
+            return False
+        return self.has_any_menu_button(page, menu_config) or (
+            self.has_support_compose_prompt(page) and self.has_visible_sku_input(page)
+        )
 
     def wait_for_url_contains(self, page, keyword: str, timeout_ms: int = 20000) -> bool:
         deadline = time.time() + timeout_ms / 1000

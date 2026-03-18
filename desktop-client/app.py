@@ -222,7 +222,32 @@ class OzonMultiApp:
             messagebox.showwarning("提示", "请先选择要关闭的账号")
             return
 
-        self.account_service.close_selected_accounts(selected_indices)
+        selected_accounts = [self.accounts[i].email for i in selected_indices]
+        self.ui.set_status_message(f"⏳ 正在后台关闭 {len(selected_accounts)} 个账号")
+
+        def _runner():
+            try:
+                summary = self.account_service.close_selected_accounts(selected_indices)
+                failed = summary.get("failed", [])
+                if failed:
+                    self.root.after(
+                        0,
+                        lambda: self.ui.set_status_message(
+                            f"⚠️ 关闭完成，成功 {len(summary.get('success', []))} 个，失败 {len(failed)} 个"
+                        ),
+                    )
+                else:
+                    self.root.after(
+                        0,
+                        lambda: self.ui.set_status_message(
+                            f"✅ 已关闭选中账号: {', '.join(selected_accounts)}"
+                        ),
+                    )
+            except Exception as exc:
+                self.append_log(f"❌ 后台关闭选中账号失败: {exc}")
+                self.root.after(0, lambda err=str(exc): self.ui.set_status_message(f"❌ 关闭账号失败: {err}"))
+
+        threading.Thread(target=_runner, daemon=True).start()
 
     def on_close(self) -> None:
         from tkinter import messagebox

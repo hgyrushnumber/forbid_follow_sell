@@ -69,6 +69,12 @@ class AccountSessionService:
             if not self._session_service._is_session_alive(session):
                 raise RuntimeError("浏览器页面不可用")
 
+            persistent_support_page = self._find_persistent_support_page(session)
+            if persistent_support_page is not None:
+                self._logger("✅ 已检测到常驻 support_v2 标签页，会话直接复用")
+                session.touch()
+                return session
+
             # 严格校验登录状态
             try:
                 # 导航到目标页面
@@ -121,6 +127,65 @@ class AccountSessionService:
     def save_after_task(self, session: BrowserSession, storage_path: str) -> None:
         self._save_login_state(session.context, storage_path)
 
+    def _mark_support_task_page(self, session: BrowserSession, page, session_id: str = None) -> None:
+        self._session_service.tag_existing_page(
+            session,
+            page,
+            role="support_task",
+            operation_name="support_task_ready",
+        )
+        metadata = {"group": "support_v2"}
+        if session_id:
+            metadata["session_id"] = session_id
+        self._session_service.update_page_metadata(session, page, **metadata)
+
+    def promote_task_page_if_support(self, session: BrowserSession, page, session_id: str = None) -> bool:
+        try:
+            if not self._page_service.is_reusable_support_task_page(page, MENU_BUTTONS):
+                return False
+            self._mark_support_task_page(session, page, session_id=session_id)
+            self._logger(
+                f"📌 已将标签页标记为常驻 support_v2 任务页: email={session.email}, session_id={session_id or 'unknown'}"
+            )
+            return True
+        except Exception as exc:
+            self._logger(f"⚠️ 标记 support_v2 常驻标签页失败: {exc}")
+            return False
+
+    def _find_persistent_support_page(self, session: BrowserSession):
+        self._session_service._refresh_page_registry(session)
+
+        candidates = []
+        for page_id, page in session.pages.items():
+            meta = session.page_meta.get(page_id) or {}
+            if meta.get("role") != "support_task":
+                continue
+            candidates.append((meta.get("last_used_at", 0), page_id, page, meta))
+
+        candidates.sort(reverse=True)
+
+        for _, page_id, page, meta in candidates:
+            try:
+                if self._page_service.is_reusable_support_task_page(page, MENU_BUTTONS):
+                    self._mark_support_task_page(
+                        session,
+                        page,
+                        session_id=meta.get("session_id"),
+                    )
+                    try:
+                        page.bring_to_front()
+                    except Exception:
+                        pass
+                    self._logger(
+                        f"♻️ 复用常驻 support_v2 标签页: email={session.email}, page_id={page_id}, url={page.url}"
+                    )
+                    session.touch()
+                    return page
+            except Exception as exc:
+                self._logger(f"⚠️ 检查常驻 support_v2 标签页失败: page_id={page_id}, error={exc}")
+
+        return None
+
 
     def _find_reusable_task_page(self, session: BrowserSession):
         self._session_service._refresh_page_registry(session)
@@ -134,6 +199,22 @@ class AccountSessionService:
 
         for _, page_id, page, meta in candidates:
             try:
+                if self._page_service.is_reusable_support_task_page(page, MENU_BUTTONS):
+                    self._mark_support_task_page(
+                        session,
+                        page,
+                        session_id=meta.get("session_id"),
+                    )
+                    try:
+                        page.bring_to_front()
+                    except Exception:
+                        pass
+                    self._logger(
+                        f"♻️ 复用 support_v2 任务标签页: email={session.email}, page_id={page_id}, url={page.url}"
+                    )
+                    session.touch()
+                    return page
+
                 if self._page_service.is_reusable_task_page(page, MENU_BUTTONS):
                     if page is session.page:
                         self._session_service.tag_existing_page(
@@ -174,6 +255,11 @@ class AccountSessionService:
 
         def _prepare_task_page():
             session = self.ensure_ready(account, headless=headless, slow_mo=slow_mo)
+
+            persistent_support_page = self._find_persistent_support_page(session)
+            if persistent_support_page is not None:
+                self._logger(f"🪟 常驻 support_v2 标签页就绪: {persistent_support_page.url}")
+                return session, persistent_support_page
 
             reusable_page = self._find_reusable_task_page(session)
             if reusable_page is not None:
