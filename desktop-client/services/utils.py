@@ -10,7 +10,6 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 # 配置常量
 DEFAULT_STORAGE_DIR = "accounts"
-VIDEO_DIR = "videos"
 DEBUG_DIR = "debug_artifacts"
 
 # MENU_BUTTONS常量已移至services.constants模块
@@ -54,7 +53,6 @@ def sleep(ms: int):
 
 def ensure_dirs():
     os.makedirs(DEFAULT_STORAGE_DIR, exist_ok=True)
-    os.makedirs(VIDEO_DIR, exist_ok=True)
     os.makedirs(DEBUG_DIR, exist_ok=True)
 
 
