@@ -64,6 +64,12 @@ def sleep(ms: int):
     time.sleep(ms / 1000)
 
 
+def run_account_serialized(email: str, operation: str, action: Callable[[], Any]):
+    if not session_service:
+        raise RuntimeError("未初始化会话服务，请先调用 set_logger")
+    return session_service.run_serialized(email, operation, action)
+
+
 # =========================
 # 通用辅助
 # =========================
