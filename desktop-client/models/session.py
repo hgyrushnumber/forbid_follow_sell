@@ -23,8 +23,6 @@ class BrowserSession:
     owner_thread_id: int = 0
     owner_thread_name: str = ""
 
-    playwright: Optional[Any] = None
-    browser: Optional[Any] = None
     context: Optional[Any] = None
     page: Optional[Any] = None
     pages: Dict[str, Any] = field(default_factory=dict)
@@ -69,7 +67,13 @@ class BrowserSession:
         return self.context is not None
 
     def has_browser(self) -> bool:
-        return self.browser is not None
+        return bool(self.browser_instance_id)
+
+    def belongs_to_current_thread(self) -> bool:
+        return self.owner_thread_id == threading.get_ident()
+
+    def belongs_to_current_thread(self) -> bool:
+        return self.owner_thread_id == threading.get_ident()
 
     def belongs_to_current_thread(self) -> bool:
         return self.owner_thread_id == threading.get_ident()
@@ -84,8 +88,7 @@ class BrowserSession:
             "owner_thread_name": self.owner_thread_name,
             "is_alive": self.is_alive,
             "last_activity": self.last_activity,
-            "has_playwright": self.playwright is not None,
-            "has_browser": self.browser is not None,
+            "has_browser": bool(self.browser_instance_id),
             "has_context": self.context is not None,
             "has_page": self.page is not None,
             "page_count": len(self.pages),
