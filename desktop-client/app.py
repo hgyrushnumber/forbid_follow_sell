@@ -85,6 +85,8 @@ class OzonMultiApp:
         self.load_accounts_config()
         self.append_log("🔄 更新账号列表")
         self.update_accounts_list()
+        if not self.ui.ensure_image_exists():
+            self.append_log("⚠️ 启动检查：当前图片文件不可用，请先重新选择图片")
         self.append_log("💓 启动分派心跳循环")
         self.start_dispatch_heartbeat()
         self.append_log("📋 启动任务轮询循环")
@@ -154,6 +156,10 @@ class OzonMultiApp:
         if not selected_indices:
             from tkinter import messagebox
             messagebox.showwarning("提示", "请先选择要执行任务的账号")
+            return
+
+        if not self.ui.ensure_image_exists():
+            self.append_log("⚠️ 已阻止任务启动：图片文件不存在或未选择")
             return
 
         skus = self.ui.get_skus()
