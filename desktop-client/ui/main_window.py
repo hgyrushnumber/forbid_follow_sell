@@ -131,18 +131,20 @@ class MainWindow:
 
         table_wrap = ttk.Frame(account_card, style="App.TFrame")
         table_wrap.pack(fill=tk.BOTH, expand=True)
-        columns = ("email", "login", "task", "count")
+        columns = ("selected", "email", "login", "task", "count")
         self.accounts_tree = ttk.Treeview(table_wrap, columns=columns, show="headings", selectmode="extended", height=18)
+        self.accounts_tree.heading("selected", text="选择")
         self.accounts_tree.heading("email", text="账号邮箱")
         self.accounts_tree.heading("login", text="登录状态")
         self.accounts_tree.heading("task", text="任务状态")
         self.accounts_tree.heading("count", text="登录次数")
+        self.accounts_tree.column("selected", width=70, anchor="center")
         self.accounts_tree.column("email", width=320, anchor="w")
         self.accounts_tree.column("login", width=120, anchor="center")
         self.accounts_tree.column("task", width=120, anchor="center")
         self.accounts_tree.column("count", width=90, anchor="center")
         self.accounts_tree.pack(side="left", fill=tk.BOTH, expand=True)
-        self.accounts_tree.bind("<<TreeviewSelect>>", callbacks["on_account_select"])
+        self.accounts_tree.bind("<<TreeviewSelect>>", lambda event: self._handle_tree_select(event, callbacks["on_account_select"]))
         scrollbar = ttk.Scrollbar(table_wrap, orient="vertical", command=self.accounts_tree.yview)
         scrollbar.pack(side="right", fill="y")
         self.accounts_tree.configure(yscrollcommand=scrollbar.set)
@@ -206,7 +208,7 @@ class MainWindow:
             "• 第一次进入投诉会话会执行菜单点击；后续同一会话 id 会直接复用。",
             "• 执行任务前请确认图片状态为“图片已就绪”。",
             "• 登录标准流程：登录 -> 邮箱登录 -> 输入邮箱 -> 手动输入验证码。",
-            "• 每个邮箱仅保留一个标签页，减少状态干扰。",
+            "• 每个邮箱复用唯一浏览器上下文，任务会按需打开临时标签页。",
         ]
         for tip in tips:
             ttk.Label(tips_card, text=tip, style="Caption.TLabel", wraplength=420, justify="left").pack(anchor="w", pady=4)
@@ -277,17 +279,22 @@ class MainWindow:
         return True
 
     def update_accounts_list(self, accounts: List[AccountInfo]) -> None:
+        selected_emails = set(self._selected_emails_from_tree())
         self._displayed_accounts = list(accounts)
         for item in self.accounts_tree.get_children():
             self.accounts_tree.delete(item)
 
         for index, account in enumerate(accounts):
+            is_selected = account.email in selected_emails or account.is_selected
+            account.is_selected = is_selected
             self.accounts_tree.insert(
                 "",
                 tk.END,
                 iid=str(index),
-                values=(account.email, account.login_status, account.task_status, account.login_count),
+                values=("✅" if is_selected else "", account.email, account.login_status, account.task_status, account.login_count),
             )
+            if is_selected:
+                self.accounts_tree.selection_add(str(index))
 
         total = len(accounts)
         logged_in = sum(1 for acc in accounts if acc.login_status == "已登录")
@@ -298,6 +305,37 @@ class MainWindow:
         self.running_var.set(str(running))
         self.failed_var.set(str(failed))
         self.set_status_message(f"就绪 - 共 {total} 个账号，{logged_in} 个已登录，{running} 个执行中")
+
+    def _selected_emails_from_tree(self) -> List[str]:
+        selected_emails = []
+        for item_id in self.accounts_tree.selection():
+            try:
+                index = int(item_id)
+            except Exception:
+                continue
+            if 0 <= index < len(self._displayed_accounts):
+                selected_emails.append(self._displayed_accounts[index].email)
+        return selected_emails
+
+    def _sync_selection_markers(self) -> None:
+        selected_ids = set(self.accounts_tree.selection())
+        for item_id in self.accounts_tree.get_children():
+            values = list(self.accounts_tree.item(item_id, "values"))
+            if not values:
+                continue
+            values[0] = "✅" if item_id in selected_ids else ""
+            self.accounts_tree.item(item_id, values=values)
+
+            try:
+                index = int(item_id)
+            except Exception:
+                continue
+            if 0 <= index < len(self._displayed_accounts):
+                self._displayed_accounts[index].is_selected = item_id in selected_ids
+
+    def _handle_tree_select(self, event, callback: Callable) -> None:
+        self._sync_selection_markers()
+        callback(event)
 
     def get_skus(self) -> List[str]:
         raw = self.sku_text.get("1.0", tk.END)
