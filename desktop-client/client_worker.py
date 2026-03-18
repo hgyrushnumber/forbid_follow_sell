@@ -61,7 +61,7 @@ def load_accounts() -> list[str]:
         data = json.load(f)
     accounts = []
     for item in data:
-        if item.get("email") and (item.get("imap_password") or item.get("use_manual_login")):
+        if item.get("email"):
             accounts.append(item["email"])
     return list(dict.fromkeys(accounts))
 
@@ -75,11 +75,9 @@ def account_detail_map() -> dict:
         data = json.load(f)
     m = {}
     for item in data:
-        if item.get("email") and (item.get("imap_password") or item.get("use_manual_login")):
+        if item.get("email"):
             m[item["email"]] = {
-                "imap_password": item.get("imap_password", ""),
-                "storage_path": item.get("storage_path"),
-                "use_manual_login": item.get("use_manual_login", False),
+                "storage_path": item.get("storage_path")
             }
     return m
 
@@ -105,10 +103,8 @@ async def process_task(task):
             email=account,
             skus=skus,
             image_path=os.path.join(os.path.dirname(__file__), "icon.png"),
-            imap_password=detail_map[account]["imap_password"],
             storage_path=detail_map[account].get("storage_path"),
-            headless=False,
-            use_manual_login=detail_map[account].get("use_manual_login", False),
+            headless=False
         )
         failed = int(summary.get("failed_count", 0))
         success = failed == 0

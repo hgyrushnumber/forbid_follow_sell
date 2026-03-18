@@ -54,10 +54,8 @@ class TaskService:
                         email=account.email,
                         skus=normalized_skus,
                         image_path=image_path,
-                        imap_password=account.imap_password,
                         storage_path=account.storage_path,
-                        headless=self.get_headless(),
-                        use_manual_login=account.use_manual_login,
+                        headless=self.get_headless()
                     )
                     account.mark_task_success()
                     account.last_error = ""
@@ -116,10 +114,8 @@ class TaskService:
                     email=target_account.email,
                     skus=skus,
                     image_path=image_path,
-                    imap_password=target_account.imap_password,
                     storage_path=target_account.storage_path,
-                    headless=self.get_headless(),
-                    use_manual_login=target_account.use_manual_login,
+                    headless=self.get_headless()
                 )
 
                 failed_count = int(summary.get("failed_count", 0))

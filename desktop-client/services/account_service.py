@@ -80,10 +80,8 @@ class AccountService:
 
                 prepare_browser(
                     email=account.email,
-                    imap_password=account.imap_password,
                     storage_path=account.storage_path,
-                    headless=self.get_headless(),
-                    use_manual_login=account.use_manual_login,
+                    headless=self.get_headless()
                 )
 
                 account.login_status = "已登录"
@@ -108,10 +106,12 @@ class AccountService:
 
         run_account_serialized(account.email, "登录账号", _login)
 
+    # selected_indices可以选择多个登录账号
     def login_selected_accounts(self, selected_indices):
         """登录选中的账号"""
         for index in selected_indices:
             account = self.accounts[index]
+            # daemon=True 表示将这个线程设置为守护线程（后台线程）
             threading.Thread(
                 target=self.login_account_thread,
                 args=(account,),

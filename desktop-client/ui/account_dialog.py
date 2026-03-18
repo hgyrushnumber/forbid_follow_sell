@@ -75,8 +75,6 @@ class AccountDialog(tk.Toplevel):
 
         self.result = AccountInfo(
             email=email,
-            imap_password="",
-            storage_path=storage_path or None,
-            use_manual_login=True,
+            storage_path=storage_path or None
         )
         self.destroy()

@@ -46,35 +46,29 @@ def run_account_serialized(email: str, operation: str, action: Callable[[], Any]
 
 def ensure_account_session_ready(
     email: str,
-    imap_password: str = "",
     storage_path: str = None,
     headless: bool = False,
-    slow_mo: int = 200,
-    use_manual_login: bool = False,
+    slow_mo: int = 200
 ):
     """统一准备账号会话，供登录和 SKU 任务共同复用。"""
     if not account_session_service:
         raise RuntimeError("未初始化账号会话服务，请先调用 set_logger")
-    account = OzonAccount(email, imap_password, storage_path, use_manual_login)
+    account = OzonAccount(email, storage_path)
     return account_session_service.ensure_ready(account, headless=headless, slow_mo=slow_mo)
 
 
 def prepare_browser(
     email: str,
-    imap_password: str = "",
     storage_path: str = None,
     headless: bool = False,
     slow_mo: int = 200,
-    use_manual_login: bool = False,
 ):
     """准备浏览器 - 启动浏览器并确保登录状态。"""
     session = ensure_account_session_ready(
         email=email,
-        imap_password=imap_password,
         storage_path=storage_path,
         headless=headless,
         slow_mo=slow_mo,
-        use_manual_login=use_manual_login,
     )
     return session.page
 
@@ -83,7 +77,6 @@ def run_task(
     email: str,
     excel_path: str,
     image_path: str,
-    imap_password: str,
     storage_path: str = None,
     headless: bool = False,
     slow_mo: int = 200,
@@ -94,7 +87,6 @@ def run_task(
         email=email,
         skus=skus,
         image_path=image_path,
-        imap_password=imap_password,
         storage_path=storage_path,
         headless=headless,
         slow_mo=slow_mo,
@@ -105,11 +97,9 @@ def run_task_with_skus(
     email: str,
     skus: List[str],
     image_path: str,
-    imap_password: str = "",
     storage_path: str = None,
     headless: bool = False,
     slow_mo: int = 200,
-    use_manual_login: bool = False,
 ):
     """执行任务 - 直接使用 SKU 列表发送图片。"""
     ensure_dirs()
@@ -125,7 +115,7 @@ def run_task_with_skus(
     if not account_session_service or not sku_service:
         raise RuntimeError("未初始化核心服务，请先调用 set_logger")
 
-    account = OzonAccount(email, imap_password, storage_path, use_manual_login)
+    account = OzonAccount(email, storage_path)
     session = None
     task_page = None
 

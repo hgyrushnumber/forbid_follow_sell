@@ -12,13 +12,11 @@ DEFAULT_STORAGE_DIR = "accounts"
 class AccountInfo:
     """
     通用账号模型。
-    现策略：统一使用“手动输入验证码”登录，不再依赖 IMAP。
+    现策略：强制使用“手动输入验证码”登录。
     """
 
     email: str
-    imap_password: str = ""
     storage_path: Optional[str] = None
-    use_manual_login: bool = True
 
     # UI / 运行时状态
     is_selected: bool = False
@@ -31,8 +29,6 @@ class AccountInfo:
     def __post_init__(self) -> None:
         if self.storage_path is None:
             self.storage_path = self.build_storage_path(self.email)
-        # 强制收敛到手动验证码模式
-        self.use_manual_login = True
 
     @staticmethod
     def build_storage_path(email: str) -> str:
@@ -77,9 +73,7 @@ class AccountInfo:
         """
         return {
             "email": self.email,
-            "imap_password": "",  # 历史字段保留，但不再使用
             "storage_path": self.storage_path,
-            "use_manual_login": True,
             "is_selected": self.is_selected,
             "login_status": self.login_status,
             "task_status": self.task_status,
@@ -92,9 +86,7 @@ class AccountInfo:
     def from_dict(cls, data: dict) -> "AccountInfo":
         return cls(
             email=data.get("email", ""),
-            imap_password="",
             storage_path=data.get("storage_path"),
-            use_manual_login=True,
             is_selected=data.get("is_selected", False),
             login_status=data.get("login_status", "未登录"),
             task_status=data.get("task_status", "空闲"),
