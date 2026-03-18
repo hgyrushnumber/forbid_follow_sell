@@ -3,11 +3,14 @@
 
 import os
 import time
-from typing import Dict, Optional
-from dataclasses import dataclass, field
+import threading
+from contextlib import contextmanager
+from typing import Callable, Dict, Iterator, Optional, TypeVar
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 from models import OzonAccount, BrowserSession
+
+T = TypeVar("T")
 
 
 class SessionService:
@@ -15,6 +18,8 @@ class SessionService:
 
     def __init__(self, logger_func):
         self.sessions: Dict[str, BrowserSession] = {}
+        self._session_locks: Dict[str, threading.RLock] = {}
+        self._locks_guard = threading.Lock()
         self._logger = logger_func
         self._ensure_dirs()
 
@@ -22,21 +27,67 @@ class SessionService:
         from services.utils import ensure_dirs
         ensure_dirs()
 
+    def _get_account_lock(self, email: str) -> threading.RLock:
+        with self._locks_guard:
+            lock = self._session_locks.get(email)
+            if lock is None:
+                lock = threading.RLock()
+                self._session_locks[email] = lock
+            return lock
+
+    @contextmanager
+    def account_session_scope(self, email: str, operation: str = "操作") -> Iterator[None]:
+        """按邮箱串行化会话操作，确保同邮箱同一时刻只有一个流程可运行。"""
+        lock = self._get_account_lock(email)
+        self._logger(f"🔒 等待账号会话锁[{operation}]: {email}")
+        with lock:
+            self._logger(f"🔓 已获取账号会话锁[{operation}]: {email}")
+            yield
+
+    def run_serialized(self, email: str, operation: str, action: Callable[[], T]) -> T:
+        """在邮箱级互斥锁内执行操作。"""
+        with self.account_session_scope(email, operation):
+            return action()
+
     def get_session(self, account: OzonAccount, headless: bool = False, slow_mo: int = 200) -> BrowserSession:
         """获取或创建账号的浏览器会话"""
-        if account.email in self.sessions:
-            session = self.sessions[account.email]
-            if self._is_session_alive(session):
-                self._logger(f"✅ 复用已存在的会话: {account.email}")
-                session.last_activity = time.time()
-                return session
-            else:
+        with self.account_session_scope(account.email, "获取会话"):
+            if account.email in self.sessions:
+                session = self.sessions[account.email]
+                if self._is_session_alive(session):
+                    self._enforce_single_tab(session)
+                    self._logger(f"✅ 复用已存在的会话: {account.email}")
+                    session.last_activity = time.time()
+                    return session
+
                 self._logger(f"⚠️ 会话已失效，创建新会话: {account.email}")
                 self._close_session(session)
 
-        session = self._create_session(account, headless, slow_mo)
-        self.sessions[account.email] = session
-        return session
+            session = self._create_session(account, headless, slow_mo)
+            self._enforce_single_tab(session)
+            self.sessions[account.email] = session
+            return session
+
+    def _enforce_single_tab(self, session: BrowserSession) -> None:
+        """每个邮箱只保留一个标签页，关闭多余标签。"""
+        if not session.context:
+            return
+        try:
+            pages = list(session.context.pages)
+        except Exception:
+            return
+        if not pages:
+            return
+
+        primary = session.page if session.page in pages else pages[0]
+        for p in pages:
+            if p is primary:
+                continue
+            try:
+                p.close()
+            except Exception:
+                pass
+        session.page = primary
 
     def _is_session_alive(self, session: BrowserSession) -> bool:
         """检查会话是否有效"""
@@ -138,16 +189,17 @@ class SessionService:
 
     def close_all_sessions(self):
         """关闭所有会话"""
-        for email, session in list(self.sessions.items()):
-            self._close_session(session)
-            del self.sessions[email]
+        with self._locks_guard:
+            emails = list(self.sessions.keys())
+        for email in emails:
+            self.close_session(email)
 
     def close_session(self, email: str):
         """关闭指定邮箱的浏览器会话"""
-        if email in self.sessions:
-            session = self.sessions[email]
-            self._close_session(session)
-            del self.sessions[email]
+        with self.account_session_scope(email, "关闭会话"):
+            session = self.sessions.pop(email, None)
+            if session:
+                self._close_session(session)
 
     def _attach_debug_listeners(self, page):
         """添加调试监听器"""

@@ -8,7 +8,7 @@
 import os
 import threading
 import tkinter as tk
-import socket
+from datetime import datetime
 
 from typing import List, Optional
 
@@ -20,6 +20,7 @@ from services.dispatch_service import DispatchService
 from services.task_service import TaskService
 from services.account_service import AccountService
 from services.mail_service import get_latest_mail_id as _get_latest_mail_id
+from services.client_identity import resolve_client_id
 from ui.main_window import MainWindow
 from ozon_core import close_all_sessions, set_logger
 
@@ -40,8 +41,9 @@ class OzonMultiApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.accounts: List[AccountInfo] = []
-        self.client_id = f"{socket.gethostname()}-{os.getpid()}"
+        self.client_id = resolve_client_id()
         self._heartbeat_stop = threading.Event()
+        self.log_file = os.environ.get("DESKTOP_LOG_FILE", os.path.join("logs", "desktop-client.log"))
 
         self.config_service = ConfigService()
 
@@ -83,6 +85,8 @@ class OzonMultiApp:
         self.load_accounts_config()
         self.append_log("🔄 更新账号列表")
         self.update_accounts_list()
+        if not self.ui.ensure_image_exists():
+            self.append_log("⚠️ 启动检查：当前图片文件不可用，请先重新选择图片")
         self.append_log("💓 启动分派心跳循环")
         self.start_dispatch_heartbeat()
         self.append_log("📋 启动任务轮询循环")
@@ -92,7 +96,14 @@ class OzonMultiApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def append_log(self, msg: str) -> None:
-        self.ui.append_log(msg)
+        line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+        try:
+            os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+        self.ui.append_log(line)
 
     def load_accounts_config(self) -> None:
         self.accounts.clear()
@@ -145,6 +156,10 @@ class OzonMultiApp:
         if not selected_indices:
             from tkinter import messagebox
             messagebox.showwarning("提示", "请先选择要执行任务的账号")
+            return
+
+        if not self.ui.ensure_image_exists():
+            self.append_log("⚠️ 已阻止任务启动：图片文件不存在或未选择")
             return
 
         skus = self.ui.get_skus()
@@ -235,7 +250,7 @@ class OzonMultiApp:
 def main() -> None:
     print("=== Ozon SKU 上传工具 启动 ===")
     print(f"分派服务器地址: {DISPATCH_SERVER}")
-    print(f"客户端ID: {socket.gethostname()}-{os.getpid()}")
+    print(f"客户端ID: {resolve_client_id()}")
 
     os.makedirs("accounts", exist_ok=True)
 

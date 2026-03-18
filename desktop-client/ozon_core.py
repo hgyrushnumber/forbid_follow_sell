@@ -1,7 +1,7 @@
 import os
 import time
 from datetime import datetime, timezone
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Dict, Any
 from dataclasses import dataclass, field
 
 from openpyxl import load_workbook
@@ -62,6 +62,12 @@ def log(msg: str):
 
 def sleep(ms: int):
     time.sleep(ms / 1000)
+
+
+def run_account_serialized(email: str, operation: str, action: Callable[[], Any]):
+    if not session_service:
+        raise RuntimeError("未初始化会话服务，请先调用 set_logger")
+    return session_service.run_serialized(email, operation, action)
 
 
 # =========================
@@ -1447,13 +1453,11 @@ def run_task_with_skus(
         except Exception as e:
             log(f"⚠️ 保存登录态失败: {e}")
 
-        page_service.normalize_messenger_home(session.page, TARGET_URL)
-
         log(f"登录完成后页面: {session.page.url}")
         log(f"登录完成后标题: {session.page.title()}")
 
         from services.sku_service import MENU_BUTTONS
-        sku_service.execute(session.page, normalized_skus, image_path, MENU_BUTTONS)
+        summary = sku_service.execute(session.page, normalized_skus, image_path, MENU_BUTTONS)
 
         try:
             from services.utils import save_login_state
@@ -1463,6 +1467,7 @@ def run_task_with_skus(
             log(f"⚠️ 任务结束后保存登录态失败: {e}")
 
         log("✅ 当前批次任务执行完成，浏览器保持打开以便复用")
+        return summary
 
     except Exception as e:
         log(f"❌ 错误: {e}")

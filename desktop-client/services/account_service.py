@@ -6,7 +6,7 @@ import threading
 from datetime import datetime
 from models import AccountInfo
 from ui.account_dialog import AccountDialog
-from ozon_core import prepare_browser, close_session
+from ozon_core import prepare_browser, close_session, run_account_serialized
 
 
 class AccountService:
@@ -72,38 +72,41 @@ class AccountService:
             self.update_accounts_list()
             return
 
-        try:
-            account.login_status = "登录中"
-            self.update_accounts_list()
-            self.append_log(f"🚀 开始登录账号: {account.email}")
-
-            prepare_browser(
-                email=account.email,
-                imap_password=account.imap_password,
-                storage_path=account.storage_path,
-                headless=self.get_headless(),
-                use_manual_login=account.use_manual_login,
-            )
-
-            account.login_status = "已登录"
-            account.last_login = datetime.now().timestamp()
-            account.login_count += 1
-            account.last_error = ""
-
-            self.append_log(f"✅ 账号登录成功: {account.email}")
+        def _login() -> None:
             try:
-                self.sync_dispatch_status_once()
+                account.login_status = "登录中"
+                self.update_accounts_list()
+                self.append_log(f"🚀 开始登录账号: {account.email}")
+
+                prepare_browser(
+                    email=account.email,
+                    imap_password=account.imap_password,
+                    storage_path=account.storage_path,
+                    headless=self.get_headless(),
+                    use_manual_login=account.use_manual_login,
+                )
+
+                account.login_status = "已登录"
+                account.last_login = datetime.now().timestamp()
+                account.login_count += 1
+                account.last_error = ""
+
+                self.append_log(f"✅ 账号登录成功: {account.email}")
+                try:
+                    self.sync_dispatch_status_once()
+                except Exception as exc:
+                    self.append_log(f"⚠️ 同步登录状态到分派服务失败: {exc}")
+
             except Exception as exc:
-                self.append_log(f"⚠️ 同步登录状态到分派服务失败: {exc}")
+                account.login_status = "登录失败"
+                account.last_error = str(exc)
+                self.append_log(f"❌ 登录账号出错: {account.email}, {exc}")
 
-        except Exception as exc:
-            account.login_status = "登录失败"
-            account.last_error = str(exc)
-            self.append_log(f"❌ 登录账号出错: {account.email}, {exc}")
+            finally:
+                self.update_accounts_list()
+                self.save_accounts_config()
 
-        finally:
-            self.update_accounts_list()
-            self.save_accounts_config()
+        run_account_serialized(account.email, "登录账号", _login)
 
     def login_selected_accounts(self, selected_indices):
         """登录选中的账号"""
