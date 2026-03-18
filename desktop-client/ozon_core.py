@@ -1433,24 +1433,26 @@ def run_task_with_skus(
     log(f"📊 读取到 {len(normalized_skus)} 个 SKU")
 
     account = OzonAccount(email, imap_password, storage_path, use_manual_login)
-    session = ensure_account_session_ready(
-        email=email,
-        imap_password=imap_password,
-        storage_path=storage_path,
-        headless=headless,
-        slow_mo=slow_mo,
-        use_manual_login=use_manual_login,
-    )
+    session = None
+    task_page = None
 
     try:
-        log(f"登录完成后页面: {session.page.url}")
-        log(f"登录完成后标题: {session.page.title()}")
-
-        from services.sku_service import MENU_BUTTONS
-        summary = sku_service.execute(session.page, normalized_skus, image_path, MENU_BUTTONS)
-
         if not account_session_service:
             raise RuntimeError("未初始化账号会话服务，请先调用 set_logger")
+
+        session, task_page = account_session_service.acquire_task_page(
+            account,
+            headless=headless,
+            slow_mo=slow_mo,
+            operation_name="发送图片任务",
+        )
+
+        log(f"登录完成后页面: {task_page.url}")
+        log(f"登录完成后标题: {task_page.title()}")
+
+        from services.sku_service import MENU_BUTTONS
+        summary = sku_service.execute(task_page, normalized_skus, image_path, MENU_BUTTONS)
+
         account_session_service.save_after_task(session, account.storage_path)
         log(f"✅ 任务结束后已保存登录态: {account.storage_path}")
 
@@ -1460,6 +1462,13 @@ def run_task_with_skus(
     except Exception as e:
         log(f"❌ 错误: {e}")
         raise
+    finally:
+        if task_page is not None and account_session_service:
+            try:
+                account_session_service.release_task_page(session, task_page)
+                log("🧹 已关闭本次任务使用的临时标签页")
+            except Exception as release_exc:
+                log(f"⚠️ 关闭任务标签页失败: {release_exc}")
 
 
 def close_all_sessions():

@@ -4,6 +4,7 @@
 import os
 import time
 import threading
+import uuid
 from contextlib import contextmanager
 from typing import Callable, Dict, Iterator, Optional, TypeVar
 from playwright.sync_api import sync_playwright
@@ -55,7 +56,8 @@ class SessionService:
             if account.email in self.sessions:
                 session = self.sessions[account.email]
                 if self._is_session_alive(session):
-                    self._enforce_single_tab(session)
+                    self._refresh_page_registry(session)
+                    self._ensure_primary_page(session)
                     self._logger(
                         f"✅ 复用已存在的会话: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
                     )
@@ -68,40 +70,153 @@ class SessionService:
                 self._close_session(session)
 
             session = self._create_session(account, headless, slow_mo)
-            self._enforce_single_tab(session)
             self.sessions[account.email] = session
             return session
 
-    def _enforce_single_tab(self, session: BrowserSession) -> None:
-        """每个邮箱只保留一个标签页，关闭多余标签。"""
+    def _new_page_id(self) -> str:
+        return uuid.uuid4().hex[:10]
+
+    def _refresh_page_registry(self, session: BrowserSession) -> None:
+        """同步 session 中记录的页面集合，允许一个 context 维护多个标签页。"""
         if not session.context:
-            return
-        try:
-            pages = list(session.context.pages)
-        except Exception:
-            return
-        if not pages:
+            session.pages.clear()
+            session.page_meta.clear()
+            session.page = None
             return
 
-        primary = session.page if session.page in pages else pages[0]
-        for p in pages:
-            if p is primary:
+        try:
+            context_pages = list(session.context.pages)
+        except Exception:
+            context_pages = []
+
+        for page_id, page in list(session.pages.items()):
+            if page in context_pages and self._is_page_alive(page):
                 continue
-            try:
-                p.close()
-            except Exception:
-                pass
-        session.page = primary
+            session.pages.pop(page_id, None)
+            session.page_meta.pop(page_id, None)
+
+        known_pages = {page for page in session.pages.values()}
+        for page in context_pages:
+            if page in known_pages or not self._is_page_alive(page):
+                continue
+            self._register_page(session, page, role="shared", operation_name="detected_existing_tab")
+
+        if session.page and not self._is_page_alive(session.page):
+            session.page = None
+
+        if session.page not in session.pages.values():
+            session.page = None
+
+    def _register_page(self, session: BrowserSession, page, role: str, operation_name: str) -> str:
+        page_id = self._new_page_id()
+        session.pages[page_id] = page
+        session.page_meta[page_id] = {
+            "role": role,
+            "operation_name": operation_name,
+            "created_at": time.time(),
+            "last_used_at": time.time(),
+        }
+        return page_id
+
+    def _get_page_id(self, session: BrowserSession, page) -> Optional[str]:
+        for page_id, existing in session.pages.items():
+            if existing is page:
+                return page_id
+        return None
+
+    def _mark_page_used(self, session: BrowserSession, page) -> None:
+        page_id = self._get_page_id(session, page)
+        if not page_id:
+            return
+        meta = session.page_meta.get(page_id)
+        if meta is not None:
+            meta["last_used_at"] = time.time()
+
+    def _ensure_primary_page(self, session: BrowserSession):
+        self._refresh_page_registry(session)
+        if session.page and self._is_page_alive(session.page):
+            self._mark_page_used(session, session.page)
+            return session.page
+
+        if session.pages:
+            page_id, primary = next(iter(session.pages.items()))
+            session.page = primary
+            meta = session.page_meta.get(page_id)
+            if meta is not None and meta.get("role") == "shared":
+                meta["role"] = "primary"
+            self._mark_page_used(session, primary)
+            return primary
+
+        if not session.context:
+            return None
+
+        primary = self._create_managed_page(session, role="primary", operation_name="restore_primary_page", make_primary=True)
+        return primary
+
+    def _is_page_alive(self, page) -> bool:
+        if not page:
+            return False
+        try:
+            _ = page.url
+            page.title()
+            return True
+        except Exception:
+            return False
+
+    def create_managed_page(self, session: BrowserSession, role: str = "task", operation_name: str = "操作", make_primary: bool = False):
+        page = self._create_managed_page(session, role=role, operation_name=operation_name, make_primary=make_primary)
+        self._logger(
+            f"🪟 已创建标签页: email={session.email}, role={role}, operation={operation_name}, total_pages={len(session.pages)}"
+        )
+        return page
+
+    def _create_managed_page(self, session: BrowserSession, role: str, operation_name: str, make_primary: bool):
+        if not session.context:
+            raise RuntimeError("浏览器上下文不可用，无法创建标签页")
+        page = session.context.new_page()
+        self._attach_debug_listeners(page)
+        self._apply_stealth(page)
+        self._register_page(session, page, role=role, operation_name=operation_name)
+        if make_primary or session.page is None:
+            session.page = page
+        session.touch()
+        return page
+
+    def release_page(self, session: BrowserSession, page, keep_primary: bool = True) -> None:
+        page_id = self._get_page_id(session, page)
+        if not page_id:
+            return
+
+        is_primary = session.page is page
+        if is_primary and keep_primary:
+            self._mark_page_used(session, page)
+            return
+
+        session.pages.pop(page_id, None)
+        session.page_meta.pop(page_id, None)
+
+        try:
+            if self._is_page_alive(page):
+                page.close()
+        except Exception:
+            pass
+
+        if is_primary:
+            session.page = None
+            self._ensure_primary_page(session)
+        session.touch()
 
     def _is_session_alive(self, session: BrowserSession) -> bool:
         """检查会话是否有效"""
-        if not session.is_alive or not session.page:
+        if not session.is_alive or not session.context:
             return False
 
         try:
-            # 尝试访问页面属性来判断会话是否有效
-            _ = session.page.url
-            session.page.title()
+            primary = self._ensure_primary_page(session)
+            if not primary:
+                return False
+            _ = primary.url
+            primary.title()
             return True
         except Exception as e:
             self._logger(f"⚠️ 会话检查失败: {e}")
@@ -140,14 +255,12 @@ class SessionService:
             record_video_size={"width": 1280, "height": 720},
         )
 
-        session.page = session.context.new_page()
-        self._attach_debug_listeners(session.page)
-
-        try:
-            Stealth().apply_stealth_sync(session.page)
-            self._logger("✅ Stealth 注入成功")
-        except Exception as e:
-            self._logger(f"⚠️ Stealth 注入失败（但不影响后续运行）: {e}")
+        session.page = self._create_managed_page(
+            session,
+            role="primary",
+            operation_name="bootstrap_primary_page",
+            make_primary=True,
+        )
 
         session.is_alive = True
         session.last_activity = time.time()
@@ -170,11 +283,16 @@ class SessionService:
         except Exception as e:
             self._logger(f"⚠️ 保存登录态失败: {e}")
 
-        try:
-            if session.page:
-                session.page.close()
-        except Exception:
-            pass
+        self._refresh_page_registry(session)
+        for page in list(session.pages.values()):
+            try:
+                if self._is_page_alive(page):
+                    page.close()
+            except Exception:
+                pass
+        session.pages.clear()
+        session.page_meta.clear()
+        session.page = None
 
         try:
             if session.context:
@@ -268,3 +386,10 @@ class SessionService:
         page.on("requestfailed", on_request_failed)
         page.on("console", on_console)
         page.on("pageerror", on_page_error)
+
+    def _apply_stealth(self, page) -> None:
+        try:
+            Stealth().apply_stealth_sync(page)
+            self._logger("✅ Stealth 注入成功")
+        except Exception as e:
+            self._logger(f"⚠️ Stealth 注入失败（但不影响后续运行）: {e}")

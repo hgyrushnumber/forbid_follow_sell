@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 
 @dataclass
@@ -24,6 +24,8 @@ class BrowserSession:
     browser: Optional[Any] = None
     context: Optional[Any] = None
     page: Optional[Any] = None
+    pages: Dict[str, Any] = field(default_factory=dict)
+    page_meta: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     is_alive: bool = False
     last_activity: float = 0.0
@@ -74,4 +76,5 @@ class BrowserSession:
             "has_browser": self.browser is not None,
             "has_context": self.context is not None,
             "has_page": self.page is not None,
+            "page_count": len(self.pages),
         }
