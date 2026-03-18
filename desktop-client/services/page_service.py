@@ -391,135 +391,109 @@ class PageService:
             return "otp_still_here"
         return final_type
 
-    def login_with_email_otp(self, page, context, account, TARGET_URL):
-        self._logger(f"开始邮箱验证码登录流程: {account.email}")
-
-        current_type = self.detect_page_type(page)
-        self._logger(f"登录流程起始页面类型: {current_type}")
-
-        if current_type == "messenger":
-            self._logger("✅ 已在 messenger 页面，无需登录")
-            return True
-
-        if current_type == "company_select":
-            ok = self.handle_company_select(page)
-            if ok:
-                from services.utils import save_login_state
-                save_login_state(context, account.storage_path)
-            return ok
-
-        if current_type == "login":
-            try:
-                from services.utils import dump_page_state
-                dump_page_state(page, "before_click_login")
-
-                login_btn = None
-                try:
-                    login_btn = page.get_by_text("Войти", exact=True).first
-                    login_btn.wait_for(state="visible", timeout=5000)
-                except Exception:
-                    login_btn = page.get_by_text("登录", exact=True).first
-                    login_btn.wait_for(state="visible", timeout=5000)
-
-                login_btn.click()
-                page.wait_for_load_state("networkidle", timeout=20000)
-                self._logger("✅ 已点击登录按钮")
-
-                dump_page_state(page, "after_click_login")
-            except Exception as e:
-                self._logger(f"⚠️ 点击登录按钮失败: {e}")
-                from services.utils import dump_page_state
-                dump_page_state(page, "error_click_login")
-                return False
-
-        current_type = self.detect_page_type(page)
-        self._logger(f"点击登录后页面类型: {current_type}")
-
-        if current_type == "ozon_id_phone":
-            try:
-                from services.utils import dump_page_state
-                dump_page_state(page, "before_click_email_login")
-
-                email_login_btn = None
-                try:
-                    email_login_btn = page.get_by_text("Войти по почте", exact=True).first
-                    email_login_btn.wait_for(state="visible", timeout=5000)
-                except Exception:
-                    email_login_btn = page.get_by_text("使用邮箱登录", exact=True).first
-                    email_login_btn.wait_for(state="visible", timeout=5000)
-
-                email_login_btn.click()
-                page.wait_for_load_state("networkidle", timeout=15000)
-                self._logger("✅ 已点击“通过邮箱登录”")
-
-                dump_page_state(page, "after_click_email_login")
-            except Exception as e:
-                self._logger(f"⚠️ 点击“通过邮箱登录”失败: {e}")
-                from services.utils import dump_page_state
-                dump_page_state(page, "error_click_email_login")
-                return False
-        elif current_type not in ("otp",):
-            self._logger("⚠️ 当前不是预期的 Ozon ID 手机号登录页")
+    def _click_primary_login_button(self, page) -> bool:
+        try:
             from services.utils import dump_page_state
-            dump_page_state(page, "error_unexpected_login_stage")
+            dump_page_state(page, "before_click_login")
+
+            try:
+                login_btn = page.get_by_text("Войти", exact=True).first
+                login_btn.wait_for(state="visible", timeout=5000)
+            except Exception:
+                login_btn = page.get_by_text("登录", exact=True).first
+                login_btn.wait_for(state="visible", timeout=5000)
+
+            login_btn.click()
+            page.wait_for_load_state("networkidle", timeout=20000)
+            self._logger("✅ 第1步完成：已点击登录按钮")
+            dump_page_state(page, "after_click_login")
+            return True
+        except Exception as e:
+            self._logger(f"⚠️ 第1步失败：点击登录按钮失败: {e}")
+            from services.utils import dump_page_state
+            dump_page_state(page, "error_click_login")
             return False
 
+    def _click_email_login_button(self, page) -> bool:
         try:
-            if self.detect_page_type(page) != "otp":
-                page.wait_for_selector("input[type='email']", timeout=20000)
-                self._logger("✅ 邮箱输入框已出现")
-                from services.utils import dump_page_state
-                dump_page_state(page, "email_input_visible")
+            from services.utils import dump_page_state
+            dump_page_state(page, "before_click_email_login")
+
+            try:
+                email_login_btn = page.get_by_text("Войти по почте", exact=True).first
+                email_login_btn.wait_for(state="visible", timeout=5000)
+            except Exception:
+                email_login_btn = page.get_by_text("使用邮箱登录", exact=True).first
+                email_login_btn.wait_for(state="visible", timeout=5000)
+
+            email_login_btn.click()
+            page.wait_for_load_state("networkidle", timeout=15000)
+            self._logger("✅ 第2步完成：已点击通过邮箱登录")
+            dump_page_state(page, "after_click_email_login")
+            return True
         except Exception as e:
-            self._logger(f"⚠️ 未找到邮箱输入框: {e}")
+            self._logger(f"⚠️ 第2步失败：点击通过邮箱登录失败: {e}")
+            from services.utils import dump_page_state
+            dump_page_state(page, "error_click_email_login")
+            return False
+
+    def _submit_email_for_login(self, page, email: str) -> bool:
+        try:
+            page.wait_for_selector("input[type='email']", timeout=20000)
+            self._logger("✅ 第3步完成：邮箱输入框已出现")
+            from services.utils import dump_page_state
+            dump_page_state(page, "email_input_visible")
+        except Exception as e:
+            self._logger(f"⚠️ 第3步失败：未找到邮箱输入框: {e}")
             from services.utils import dump_page_state
             dump_page_state(page, "error_email_input_not_found")
             return False
 
-        if self.detect_page_type(page) != "otp":
-            try:
-                page.fill("input[type='email']", account.email)
-                submit_btn = page.locator("button[type='submit']").first
-                submit_btn.click()
-                self._logger("✅ 已提交邮箱")
-
-                from services.utils import dump_page_state
-                dump_page_state(page, "after_submit_email")
-            except Exception as e:
-                self._logger(f"⚠️ 填写邮箱或提交失败: {e}")
-                from services.utils import dump_page_state
-                dump_page_state(page, "error_submit_email")
-                return False
-
         try:
-            self._logger("已提交邮箱，等待验证码输入框...")
+            page.fill("input[type='email']", email)
+            submit_btn = page.locator("button[type='submit']").first
+            submit_btn.click()
+            self._logger(f"✅ 第4步完成：已提交登录邮箱 {email}")
+            from services.utils import dump_page_state
+            dump_page_state(page, "after_submit_email")
+            return True
+        except Exception as e:
+            self._logger(f"⚠️ 第4步失败：填写邮箱或提交失败: {e}")
+            from services.utils import dump_page_state
+            dump_page_state(page, "error_submit_email")
+            return False
+
+    def _wait_for_otp_stage(self, page):
+        try:
+            self._logger("ℹ️ 第5步：已提交邮箱，等待验证码输入框...")
             otp_kind, otp_input = self.wait_for_otp_input(page, timeout_ms=30000)
 
             if otp_kind == "page_changed":
-                self._logger("⚠️ 等待验证码输入框时页面已跳转")
+                self._logger("⚠️ 第5步失败：等待验证码输入框时页面已跳转")
                 from services.utils import dump_page_state
                 dump_page_state(page, "error_otp_page_changed_before_input")
-                return False
+                return None, None
 
             if not otp_input:
-                self._logger("⚠️ 未识别到验证码输入框")
+                self._logger("⚠️ 第5步失败：未识别到验证码输入框")
                 self.log_input_candidates(page, "OTP_INPUT_NOT_FOUND")
                 from services.utils import dump_page_state
                 dump_page_state(page, "error_otp_input_not_found")
-                return False
+                return None, None
 
-            self._logger(f"✅ 验证码输入框已出现，识别类型: {otp_kind}")
+            self._logger(f"✅ 第5步完成：验证码输入框已出现，识别类型: {otp_kind}")
             self.log_input_candidates(page, "OTP_INPUT_FOUND")
             from services.utils import dump_page_state
             dump_page_state(page, "otp_input_visible")
+            return otp_kind, otp_input
         except Exception as e:
-            self._logger(f"⚠️ 未出现验证码输入框: {e}")
+            self._logger(f"⚠️ 第5步失败：未出现验证码输入框: {e}")
             self.log_input_candidates(page, "OTP_INPUT_WAIT_EXCEPTION")
             from services.utils import dump_page_state
             dump_page_state(page, "error_otp_input_not_found")
-            return False
+            return None, None
 
-        # 强制采用手动输入验证码
+    def _prompt_manual_otp(self) -> str:
         import tkinter as tk
         from tkinter import simpledialog
 
@@ -527,18 +501,18 @@ class PageService:
         root.withdraw()
         otp = simpledialog.askstring("验证码输入", "请输入邮箱中收到的验证码:", parent=root)
         root.destroy()
-
         if not otp:
-            self._logger("❌ 用户未输入验证码")
-            return False
+            self._logger("❌ 第6步失败：用户未输入验证码")
+            return ""
+        self._logger("✅ 第6步完成：已接收手动输入验证码")
+        return otp.strip()
 
-        self._logger("✅ 已接收手动输入验证码")
-
+    def _fill_manual_otp(self, page, otp: str) -> bool:
         try:
-            self._logger("正在填入验证码")
+            self._logger("ℹ️ 第7步：正在填入验证码")
             otp_kind, otp_input = self.get_otp_input_locator(page)
             if not otp_input:
-                self._logger("⚠️ 填写验证码前无法重新定位输入框")
+                self._logger("⚠️ 第7步失败：填写验证码前无法重新定位输入框")
                 self.log_input_candidates(page, "OTP_INPUT_RELOCATE_FAILED")
                 from services.utils import dump_page_state
                 dump_page_state(page, "error_fill_otp_locator_missing")
@@ -549,38 +523,100 @@ class PageService:
             from services.utils import dump_page_state
             dump_page_state(page, "after_fill_otp")
 
-            self._logger("验证码已填写，等待页面自动跳转...")
+            self._logger("✅ 第7步完成：验证码已填写，等待页面自动跳转...")
             sleep(5000)
             dump_page_state(page, "after_fill_otp_wait")
+            return True
         except Exception as e:
-            self._logger(f"⚠️ 填写验证码失败: {e}")
+            self._logger(f"⚠️ 第7步失败：填写验证码失败: {e}")
             self.log_input_candidates(page, "OTP_INPUT_FILL_EXCEPTION")
             from services.utils import dump_page_state
             dump_page_state(page, "error_fill_otp")
             return False
 
+    def _finalize_login_after_otp(self, page, context, account, TARGET_URL) -> bool:
         result_type = self.wait_for_post_otp_result(page, timeout_ms=20000)
-        self._logger(f"OTP 提交后的页面类型: {result_type}")
+        self._logger(f"ℹ️ 第8步：OTP 提交后的页面类型: {result_type}")
 
         from services.utils import dump_page_state
         dump_page_state(page, "after_otp_result")
 
         if result_type in ("otp_error", "otp_still_here", "blocked"):
-            self._logger("❌ 验证码登录未成功")
+            self._logger("❌ 第8步失败：验证码登录未成功")
             return False
 
         if result_type == "company_select":
+            self._logger("ℹ️ 第8步：进入公司选择页，继续处理")
             ok = self.handle_company_select(page)
             if not ok:
                 return False
-
             try:
                 page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
                 sleep(3000)
             except Exception:
                 pass
 
-        return self.is_messenger_page(page)
+        success = self.is_messenger_page(page)
+        if success:
+            from services.utils import save_login_state
+            save_login_state(context, account.storage_path)
+            self._logger("✅ 第8步完成：登录成功，已进入 messenger 页面")
+        else:
+            self._logger(f"❌ 第8步失败：登录后未进入 messenger 页面，当前 URL: {page.url}")
+        return success
+
+    def login_with_email_otp(self, page, context, account, TARGET_URL):
+        self._logger(f"开始标准化登录流程: {account.email}")
+        self._logger("登录流程规范: 打开登录页 -> 点击登录 -> 通过邮箱登录 -> 输入邮箱 -> 手动输入验证码 -> 校验是否进入 messenger")
+
+        current_type = self.detect_page_type(page)
+        self._logger(f"登录流程起始页面类型: {current_type}")
+
+        if current_type == "messenger":
+            self._logger("✅ 已在 messenger 页面，无需登录")
+            return True
+
+        if current_type == "company_select":
+            self._logger("ℹ️ 起始即为公司选择页，先完成公司选择")
+            ok = self.handle_company_select(page)
+            if ok:
+                from services.utils import save_login_state
+                save_login_state(context, account.storage_path)
+            return ok
+
+        if current_type == "login":
+            if not self._click_primary_login_button(page):
+                return False
+            current_type = self.detect_page_type(page)
+            self._logger(f"第1步后页面类型: {current_type}")
+
+        if current_type == "ozon_id_phone":
+            if not self._click_email_login_button(page):
+                return False
+            current_type = self.detect_page_type(page)
+            self._logger(f"第2步后页面类型: {current_type}")
+        elif current_type not in ("otp",):
+            self._logger("⚠️ 当前不是预期的 Ozon ID 手机号登录页")
+            from services.utils import dump_page_state
+            dump_page_state(page, "error_unexpected_login_stage")
+            return False
+
+        if self.detect_page_type(page) != "otp":
+            if not self._submit_email_for_login(page, account.email):
+                return False
+
+        otp_kind, otp_input = self._wait_for_otp_stage(page)
+        if not otp_input:
+            return False
+
+        otp = self._prompt_manual_otp()
+        if not otp:
+            return False
+
+        if not self._fill_manual_otp(page, otp):
+            return False
+
+        return self._finalize_login_after_otp(page, context, account, TARGET_URL)
 
     def ensure_logged_in_and_ready(self, page, context, account, TARGET_URL):
         self._logger(f"🌐 登录后检查页面: {page.url}")

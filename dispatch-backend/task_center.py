@@ -107,10 +107,12 @@ class TaskCenter:
                     status TEXT NOT NULL,
                     last_seen TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    next_account_index INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            self._ensure_column(conn, "clients", "next_account_index", "next_account_index INTEGER NOT NULL DEFAULT 0")
 
             conn.execute(
                 """
@@ -299,8 +301,8 @@ class TaskCenter:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO clients (client_id, accounts_json, status, last_seen, created_at, updated_at)
-                VALUES (?, ?, 'active', ?, ?, ?)
+                INSERT INTO clients (client_id, accounts_json, status, last_seen, created_at, updated_at, next_account_index)
+                VALUES (?, ?, 'active', ?, ?, ?, 0)
                 ON CONFLICT(client_id) DO UPDATE SET
                     accounts_json=excluded.accounts_json,
                     status='active',
@@ -362,6 +364,31 @@ class TaskCenter:
             result.append(item)
         return result
 
+    def _list_busy_accounts(self, conn: sqlite3.Connection, client_id: str) -> List[str]:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT assigned_account FROM tasks
+            WHERE assigned_client_id=? AND assigned_account IS NOT NULL
+              AND status IN ('dispatched', 'running')
+            """,
+            (client_id,),
+        ).fetchall()
+        return [str(r[0]) for r in rows if r and r[0]]
+
+    def _list_available_accounts(self, conn: sqlite3.Connection, client_id: str, accounts: List[str]) -> List[str]:
+        busy = set(self._list_busy_accounts(conn, client_id))
+        return [a for a in accounts if a not in busy]
+
+    def _pick_account_round_robin(self, conn: sqlite3.Connection, client_id: str, accounts: List[str]) -> str:
+        row = conn.execute("SELECT next_account_index FROM clients WHERE client_id=?", (client_id,)).fetchone()
+        idx = int(row[0] if row and row[0] is not None else 0)
+        if idx < 0:
+            idx = 0
+        account = accounts[idx % len(accounts)]
+        next_idx = (idx + 1) % len(accounts)
+        conn.execute("UPDATE clients SET next_account_index=?, updated_at=? WHERE client_id=?", (next_idx, now_iso(), client_id))
+        return account
+
     def pull_task_for_client(self, client_id: str) -> Optional[Dict[str, Any]]:
         active = [c for c in self.list_active_clients() if c["client_id"] == client_id and c["alive"]]
         if not active:
@@ -372,6 +399,10 @@ class TaskCenter:
             return None
 
         with self._connect() as conn:
+            available_accounts = self._list_available_accounts(conn, client_id, accounts)
+            if not available_accounts:
+                return None
+
             row = conn.execute(
                 "SELECT * FROM tasks WHERE status='pending' AND assigned_client_id IS NULL ORDER BY created_at ASC LIMIT 1"
             ).fetchone()
@@ -379,13 +410,13 @@ class TaskCenter:
                 return None
 
             task = dict(row)
-            assigned_account = accounts[0]
+            assigned_account = self._pick_account_round_robin(conn, client_id, available_accounts)
             ts = now_iso()
             conn.execute(
                 """
                 UPDATE tasks
                 SET assigned_client_id=?, assigned_account=?, status='dispatched', progress=5,
-                    message='任务已分派给客户端', picked_at=?, updated_at=?
+                    message='任务已分派给客户端账号', picked_at=?, updated_at=?
                 WHERE id=? AND status='pending' AND assigned_client_id IS NULL
                 """,
                 (client_id, assigned_account, ts, ts, task["id"]),
