@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import hashlib
 import os
-import time
+import queue
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from typing import Callable, Dict, Iterator, Optional, TypeVar
@@ -17,7 +19,7 @@ T = TypeVar("T")
 
 
 class SessionService:
-    """会话管理服务 - 复用全局 Browser，按账号隔离 BrowserContext。"""
+    """会话管理服务 - 通过少量固定工作线程复用 Browser，并按账号隔离 BrowserContext。"""
 
     def __init__(self, logger_func):
         self.sessions: Dict[str, BrowserSession] = {}
@@ -26,17 +28,51 @@ class SessionService:
         self._browser_guard = threading.RLock()
         self._logger = logger_func
 
-        self._shared_playwright = None
-        self._shared_browser = None
-        self._shared_browser_instance_id = ""
-        self._shared_browser_config = None
+        self._thread_browsers: Dict[int, dict] = {}
+        self._worker_count = max(1, int(os.environ.get("SESSION_WORKER_COUNT", "2")))
+        self._worker_queues = [queue.Queue() for _ in range(self._worker_count)]
+        self._worker_threads = []
+        self._local = threading.local()
 
         self._ensure_dirs()
+        self._start_workers()
 
     def _ensure_dirs(self):
         from services.utils import ensure_dirs
 
         ensure_dirs()
+
+    def _start_workers(self) -> None:
+        for index in range(self._worker_count):
+            worker = threading.Thread(
+                target=self._worker_loop,
+                args=(index,),
+                name=f"session-worker-{index}",
+                daemon=True,
+            )
+            worker.start()
+            self._worker_threads.append(worker)
+        self._logger(f"🧵 会话工作线程池已启动: count={self._worker_count}")
+
+    def _worker_loop(self, worker_index: int) -> None:
+        self._local.worker_index = worker_index
+        current_thread = threading.current_thread()
+        self._logger(f"🧵 会话工作线程启动: {current_thread.name}({current_thread.ident})")
+
+        while True:
+            task = self._worker_queues[worker_index].get()
+            event = task["event"]
+            try:
+                result = self._execute_serialized(task["email"], task["operation"], task["action"])
+                task["result"] = result
+            except Exception as exc:
+                task["exception"] = exc
+            finally:
+                event.set()
+
+    def _assign_worker_index(self, email: str) -> int:
+        digest = hashlib.md5(email.strip().lower().encode("utf-8")).hexdigest()
+        return int(digest[:8], 16) % self._worker_count
 
     def _get_account_lock(self, email: str) -> threading.RLock:
         with self._locks_guard:
@@ -55,10 +91,31 @@ class SessionService:
             self._logger(f"🔓 已获取账号会话锁[{operation}]: {email}")
             yield
 
-    def run_serialized(self, email: str, operation: str, action: Callable[[], T]) -> T:
-        """在邮箱级互斥锁内执行操作。"""
+    def _execute_serialized(self, email: str, operation: str, action: Callable[[], T]) -> T:
         with self.account_session_scope(email, operation):
             return action()
+
+    def run_serialized(self, email: str, operation: str, action: Callable[[], T]) -> T:
+        """在账号绑定的固定工作线程中串行执行操作。"""
+        worker_index = self._assign_worker_index(email)
+        current_worker_index = getattr(self._local, "worker_index", None)
+        if current_worker_index == worker_index:
+            return self._execute_serialized(email, operation, action)
+
+        event = threading.Event()
+        task = {
+            "email": email,
+            "operation": operation,
+            "action": action,
+            "event": event,
+            "result": None,
+            "exception": None,
+        }
+        self._worker_queues[worker_index].put(task)
+        event.wait()
+        if task["exception"] is not None:
+            raise task["exception"]
+        return task["result"]
 
     def get_session(
         self,
@@ -69,21 +126,31 @@ class SessionService:
     ) -> BrowserSession:
         """获取或创建账号的浏览器会话。"""
         with self.account_session_scope(account.email, "获取会话"):
+            current_thread_id = threading.get_ident()
+            current_thread_name = threading.current_thread().name
+
             if account.email in self.sessions:
                 session = self.sessions[account.email]
-                if self._is_session_alive(session):
+                if session.owner_thread_id != current_thread_id:
+                    self._logger(
+                        "ℹ️ 检测到账号会话线程归属变化，准备重建上下文: "
+                        f"email={account.email}, from_thread={session.owner_thread_name}({session.owner_thread_id}), "
+                        f"to_thread={current_thread_name}({current_thread_id})"
+                    )
+                    self._abandon_session(session)
+                elif self._is_session_alive(session):
                     self._refresh_page_registry(session)
                     self._ensure_primary_page(session)
                     self._logger(
-                        f"✅ 复用已存在的账号上下文: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+                        f"✅ 复用已存在的账号上下文: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}, thread={session.owner_thread_name}({session.owner_thread_id})"
                     )
                     session.last_activity = time.time()
                     return session
-
-                self._logger(
-                    f"⚠️ 账号上下文已失效，重新创建: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
-                )
-                self._close_session(session)
+                else:
+                    self._logger(
+                        f"⚠️ 账号上下文已失效，重新创建: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+                    )
+                    self._close_session(session)
 
             session = self._create_session(account, headless, slow_mo, storage_state)
             self.sessions[account.email] = session
@@ -102,28 +169,37 @@ class SessionService:
             ],
         }
 
-    def _ensure_shared_browser(self, headless: bool, slow_mo: int):
+    def _ensure_thread_browser(self, headless: bool, slow_mo: int):
         desired_config = self._build_browser_config(headless=headless, slow_mo=slow_mo)
+        thread_id = threading.get_ident()
+        thread_name = threading.current_thread().name
 
         with self._browser_guard:
-            if self._shared_browser and self._is_browser_alive(self._shared_browser):
-                if self._shared_browser_config != desired_config:
+            entry = self._thread_browsers.get(thread_id)
+            if entry and self._is_browser_alive(entry.get("browser")):
+                if entry.get("config") != desired_config:
                     self._logger(
-                        "ℹ️ 检测到新的浏览器启动参数请求，继续复用现有全局 Browser "
-                        f"(current={self._shared_browser_config}, requested={desired_config})"
+                        "ℹ️ 当前工作线程检测到新的浏览器启动参数请求，继续复用该线程已有 Browser "
+                        f"(thread={thread_name}({thread_id}), current={entry.get('config')}, requested={desired_config})"
                     )
-                return self._shared_browser
+                return entry
 
-            self._logger("🚀 正在启动全局共享 Browser 实例")
-            self._shared_playwright = sync_playwright().start()
-            self._shared_browser = self._shared_playwright.chromium.launch(**desired_config)
-            self._shared_browser_config = desired_config
-            self._shared_browser_instance_id = uuid.uuid4().hex[:12]
+            self._logger(f"🚀 正在启动线程级共享 Browser: thread={thread_name}({thread_id})")
+            playwright = sync_playwright().start()
+            browser = playwright.chromium.launch(**desired_config)
+            entry = {
+                "playwright": playwright,
+                "browser": browser,
+                "config": desired_config,
+                "browser_instance_id": uuid.uuid4().hex[:12],
+                "thread_name": thread_name,
+            }
+            self._thread_browsers[thread_id] = entry
             self._logger(
-                "✅ 全局共享 Browser 启动成功: "
-                f"browser_instance_id={self._shared_browser_instance_id}, config={desired_config}"
+                "✅ 线程级共享 Browser 启动成功: "
+                f"thread={thread_name}({thread_id}), browser_instance_id={entry['browser_instance_id']}, config={desired_config}"
             )
-            return self._shared_browser
+            return entry
 
     def _is_browser_alive(self, browser) -> bool:
         if not browser:
@@ -247,6 +323,10 @@ class SessionService:
     def _create_managed_page(self, session: BrowserSession, role: str, operation_name: str, make_primary: bool):
         if not session.context:
             raise RuntimeError("浏览器上下文不可用，无法创建标签页")
+        if not session.belongs_to_current_thread():
+            raise RuntimeError(
+                f"账号会话绑定在线程 {session.owner_thread_name}({session.owner_thread_id})，不能在线程 {threading.current_thread().name}({threading.get_ident()}) 上直接创建标签页"
+            )
         page = session.context.new_page()
         self._attach_debug_listeners(page)
         self._apply_stealth(page)
@@ -285,7 +365,12 @@ class SessionService:
         if not session.is_alive or not session.context:
             return False
 
-        if not self._is_browser_alive(self._shared_browser):
+        if not session.belongs_to_current_thread():
+            return False
+
+        with self._browser_guard:
+            browser_entry = self._thread_browsers.get(session.owner_thread_id)
+        if not browser_entry or not self._is_browser_alive(browser_entry.get("browser")):
             return False
 
         try:
@@ -300,21 +385,23 @@ class SessionService:
             return False
 
     def _create_session(self, account: OzonAccount, headless: bool, slow_mo: int, storage_state: str = None) -> BrowserSession:
-        """创建新的账号级 BrowserContext，会复用全局 Browser。"""
-        browser = self._ensure_shared_browser(headless=headless, slow_mo=slow_mo)
+        """创建新的账号级 BrowserContext，会复用当前工作线程上的 Browser。"""
+        browser_entry = self._ensure_thread_browser(headless=headless, slow_mo=slow_mo)
         session = BrowserSession(
             email=account.email,
             storage_path=account.storage_path,
-            browser_instance_id=self._shared_browser_instance_id,
+            browser_instance_id=browser_entry["browser_instance_id"],
+            owner_thread_id=threading.get_ident(),
+            owner_thread_name=threading.current_thread().name,
         )
         self._logger(
-            f"🚀 正在创建账号上下文: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+            f"🚀 正在创建账号上下文: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}, thread={session.owner_thread_name}({session.owner_thread_id})"
         )
 
         if storage_state is None and os.path.exists(account.storage_path):
             storage_state = account.storage_path
 
-        session.context = browser.new_context(
+        session.context = browser_entry["browser"].new_context(
             storage_state=storage_state,
             user_agent=os.environ.get(
                 "USER_AGENT",
@@ -336,14 +423,26 @@ class SessionService:
 
         session.mark_alive()
         self._logger(
-            f"✅ 账号上下文创建成功: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+            f"✅ 账号上下文创建成功: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}, thread={session.owner_thread_name}({session.owner_thread_id})"
         )
         return session
 
-    def _close_session(self, session: BrowserSession):
-        """关闭账号级会话，仅销毁其 Context/Page，不关闭共享 Browser。"""
+    def _abandon_session(self, session: BrowserSession) -> None:
+        """放弃不可安全跨线程关闭的会话引用，避免触发 Playwright 线程错误。"""
         self._logger(
-            f"🛑 正在关闭账号上下文: email={session.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+            "⚠️ 检测到跨线程旧会话，已放弃旧引用并将在新工作线程重建: "
+            f"email={session.email}, old_thread={session.owner_thread_name}({session.owner_thread_id}), browser_instance_id={session.browser_instance_id}"
+        )
+        session.context = None
+        session.page = None
+        session.pages.clear()
+        session.page_meta.clear()
+        session.mark_dead()
+
+    def _close_session(self, session: BrowserSession):
+        """关闭账号级会话，仅销毁其 Context/Page；线程无活跃会话时再销毁该线程 Browser。"""
+        self._logger(
+            f"🛑 正在关闭账号上下文: email={session.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}, thread={session.owner_thread_name}({session.owner_thread_id})"
         )
 
         try:
@@ -373,34 +472,39 @@ class SessionService:
 
         session.context = None
         session.mark_dead()
-        self._cleanup_shared_browser_if_idle()
+        self._cleanup_thread_browser_if_idle(session.owner_thread_id)
 
-    def _cleanup_shared_browser_if_idle(self):
+    def _cleanup_thread_browser_if_idle(self, thread_id: int):
         with self._browser_guard:
-            if any(session.is_alive and session.context for session in self.sessions.values()):
+            if any(
+                session.is_alive and session.context and session.owner_thread_id == thread_id
+                for session in self.sessions.values()
+            ):
                 return
 
-            if self._shared_browser:
+            entry = self._thread_browsers.pop(thread_id, None)
+            if not entry:
+                return
+
+            browser = entry.get("browser")
+            playwright = entry.get("playwright")
+
+            if browser:
                 try:
-                    self._shared_browser.close()
+                    browser.close()
                 except Exception:
                     pass
-                self._shared_browser = None
 
-            if self._shared_playwright:
+            if playwright:
                 try:
-                    self._shared_playwright.stop()
+                    playwright.stop()
                 except Exception:
                     pass
-                self._shared_playwright = None
 
-            if self._shared_browser_instance_id:
-                self._logger(
-                    f"🧹 全局共享 Browser 已释放: browser_instance_id={self._shared_browser_instance_id}"
-                )
-
-            self._shared_browser_instance_id = ""
-            self._shared_browser_config = None
+            self._logger(
+                "🧹 线程级共享 Browser 已释放: "
+                f"thread={entry.get('thread_name')}({thread_id}), browser_instance_id={entry.get('browser_instance_id')}"
+            )
 
     def close_all_sessions(self):
         """关闭所有会话。"""
@@ -411,10 +515,13 @@ class SessionService:
 
     def close_session(self, email: str):
         """关闭指定邮箱的浏览器会话。"""
-        with self.account_session_scope(email, "关闭会话"):
+
+        def _close_current_session() -> None:
             session = self.sessions.pop(email, None)
             if session:
                 self._close_session(session)
+
+        self.run_serialized(email, "关闭会话", _close_current_session)
 
     def _attach_debug_listeners(self, page):
         """添加调试监听器。"""
