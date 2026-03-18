@@ -3,8 +3,9 @@
 
 import os
 import traceback
+from datetime import datetime
 from typing import Callable, List
-from ozon_core import run_task_with_skus
+from ozon_core import run_task_with_skus, run_account_serialized
 
 
 class TaskService:
@@ -36,25 +37,40 @@ class TaskService:
             raise FileNotFoundError(f"图片文件不存在: {image_path}")
 
         for account in selected_accounts:
-            self.append_log(f"🚀 开始执行本地任务，账号: {account.email}")
+            def _run_for_account():
+                self.append_log(f"🚀 开始执行本地任务，账号: {account.email}")
+                account.mark_task_running()
 
-            if account.login_status != "已登录":
-                self.append_log(f"⚠️ 账号 {account.email} 未登录，尝试登录")
-                self.login_account(account)
-                if account.login_status != "已登录":
-                    self.append_log(f"❌ 账号登录失败，跳过: {account.email}")
-                    continue
+                try:
+                    if account.login_status != "已登录":
+                        self.append_log(f"⚠️ 账号 {account.email} 未登录，尝试登录")
+                        self.login_account(account)
+                        if account.login_status != "已登录":
+                            self.append_log(f"❌ 账号登录失败，跳过: {account.email}")
+                            account.mark_task_failed("账号登录失败")
+                            return
 
-            run_task_with_skus(
-                email=account.email,
-                skus=normalized_skus,
-                image_path=image_path,
-                imap_password=account.imap_password,
-                storage_path=account.storage_path,
-                headless=self.get_headless(),
-                use_manual_login=account.use_manual_login,
-            )
-            self.append_log(f"✅ 本地任务执行完成: {account.email}")
+                    summary = run_task_with_skus(
+                        email=account.email,
+                        skus=normalized_skus,
+                        image_path=image_path,
+                        imap_password=account.imap_password,
+                        storage_path=account.storage_path,
+                        headless=self.get_headless(),
+                        use_manual_login=account.use_manual_login,
+                    )
+                    account.mark_task_success()
+                    account.last_error = ""
+                    account.last_login = account.last_login or datetime.now().timestamp()
+                    self.append_log(f"✅ 本地任务执行完成: {account.email}")
+                    self.append_log(
+                        f"📊 {account.email} SKU统计: total={summary.get('total', 0)}, success={summary.get('success_count', 0)}, failed={summary.get('failed_count', 0)}"
+                    )
+                except Exception as exc:
+                    account.mark_task_failed(str(exc))
+                    raise
+
+            run_account_serialized(account.email, "执行本地任务", _run_for_account)
 
     def run_task_from_dispatch(self, task: dict):
         """处理从分派服务拉取的任务"""
@@ -72,14 +88,6 @@ class TaskService:
                 self.dispatch_service.mark_task_complete(task_id, success=False, error=f"找不到分配的账号: {account}")
                 return
 
-            if target_account.login_status != "已登录":
-                self.append_log(f"⚠️ 账号 {account} 未登录，尝试登录")
-                self.login_account(target_account)
-                if target_account.login_status != "已登录":
-                    self.append_log(f"❌ 账号 {account} 登录失败，无法执行任务")
-                    self.dispatch_service.mark_task_complete(task_id, success=False, error=f"账号 {account} 登录失败")
-                    return
-
             if not skus:
                 self.append_log("❌ 任务中没有包含任何SKU")
                 self.dispatch_service.mark_task_complete(task_id, success=False, error="任务中没有包含任何SKU")
@@ -91,20 +99,49 @@ class TaskService:
                 self.dispatch_service.mark_task_complete(task_id, success=False, error=f"图片文件不存在: {image_path}")
                 return
 
-            self.dispatch_service.mark_task_running(task["id"])
+            def _run_dispatch_task():
+                if target_account.login_status != "已登录":
+                    self.append_log(f"⚠️ 账号 {account} 未登录，尝试登录")
+                    self.login_account(target_account)
+                    if target_account.login_status != "已登录":
+                        self.append_log(f"❌ 账号 {account} 登录失败，无法执行任务")
+                        target_account.mark_task_failed(f"账号 {account} 登录失败")
+                        self.dispatch_service.mark_task_complete(task_id, success=False, error=f"账号 {account} 登录失败")
+                        return
 
-            run_task_with_skus(
-                email=target_account.email,
-                skus=skus,
-                image_path=image_path,
-                imap_password=target_account.imap_password,
-                storage_path=target_account.storage_path,
-                headless=self.get_headless(),
-                use_manual_login=target_account.use_manual_login,
-            )
+                self.dispatch_service.mark_task_running(task["id"])
+                target_account.mark_task_running()
 
-            self.dispatch_service.mark_task_complete(task_id, success=True, sku_count=len(skus))
-            self.append_log(f"✅ 任务 {task_id} 执行成功")
+                summary = run_task_with_skus(
+                    email=target_account.email,
+                    skus=skus,
+                    image_path=image_path,
+                    imap_password=target_account.imap_password,
+                    storage_path=target_account.storage_path,
+                    headless=self.get_headless(),
+                    use_manual_login=target_account.use_manual_login,
+                )
+
+                failed_count = int(summary.get("failed_count", 0))
+                success = failed_count == 0
+                error = "" if success else f"部分SKU处理失败，失败数量: {failed_count}"
+                if success:
+                    target_account.mark_task_success()
+                    target_account.last_error = ""
+                else:
+                    target_account.mark_task_failed(error)
+                self.dispatch_service.mark_task_complete(
+                    task_id,
+                    success=success,
+                    error=error,
+                    sku_count=int(summary.get("success_count", 0)),
+                    result=summary,
+                )
+                self.append_log(
+                    f"✅ 任务 {task_id} 执行完成: total={summary.get('total', 0)}, success={summary.get('success_count', 0)}, failed={failed_count}"
+                )
+
+            run_account_serialized(target_account.email, "执行分派任务", _run_dispatch_task)
 
         except Exception as exc:
             self.append_log(f"❌ 任务执行失败: {str(exc)}")

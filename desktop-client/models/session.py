@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -16,6 +17,8 @@ class BrowserSession:
 
     email: str
     storage_path: str
+    session_key: str = ""
+    browser_instance_id: str = ""
 
     playwright: Optional[Any] = None
     browser: Optional[Any] = None
@@ -24,6 +27,21 @@ class BrowserSession:
 
     is_alive: bool = False
     last_activity: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.session_key:
+            self.session_key = self.build_session_key(self.email)
+        if not self.browser_instance_id:
+            self.browser_instance_id = self.build_browser_instance_id()
+
+    @staticmethod
+    def build_session_key(email: str) -> str:
+        safe_email = email.strip().lower().replace("@", "_at_").replace(".", "_")
+        return f"email::{safe_email}"
+
+    @staticmethod
+    def build_browser_instance_id() -> str:
+        return uuid.uuid4().hex[:12]
 
     def touch(self) -> None:
         self.last_activity = time.time()
@@ -48,6 +66,8 @@ class BrowserSession:
         return {
             "email": self.email,
             "storage_path": self.storage_path,
+            "session_key": self.session_key,
+            "browser_instance_id": self.browser_instance_id,
             "is_alive": self.is_alive,
             "last_activity": self.last_activity,
             "has_playwright": self.playwright is not None,

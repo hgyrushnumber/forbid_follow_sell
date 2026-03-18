@@ -93,12 +93,15 @@ class DispatchService:
     def mark_task_running(self, task_id: str) -> None:
         self._dispatch_post(f"/api/clients/{self.client_id}/tasks/{task_id}/running", {})
 
-    def mark_task_complete(self, task_id: str, success: bool, error: str = None, sku_count: int = 0) -> None:
+    def mark_task_complete(self, task_id: str, success: bool, error: str = None, sku_count: int = 0, result: dict = None) -> None:
         payload = {"success": success}
-        if success:
-            payload["result"] = {"sku_count": sku_count}
-        else:
-            payload["error"] = error
+        final_result = dict(result or {})
+        if success and "sku_count" not in final_result:
+            final_result["sku_count"] = sku_count
+        if final_result:
+            payload["result"] = final_result
+        if not success:
+            payload["error"] = error or "任务执行失败"
         self._dispatch_post(f"/api/clients/{self.client_id}/tasks/{task_id}/complete", payload)
 
     def mark_client_offline(self) -> None:

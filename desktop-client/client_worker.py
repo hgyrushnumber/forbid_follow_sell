@@ -5,17 +5,29 @@
 
 import json
 import os
-import socket
 import time
-import uuid
 import urllib.request
 import asyncio
+from datetime import datetime
 from task_center import parse_sku_text
 from ozon_core import run_task_with_skus
+from services.client_identity import resolve_client_id
 
 # 替换为后端HTTP地址（线上替换为服务器域名）
 SERVER = os.environ.get("DISPATCH_SERVER", "http://127.0.0.1:18080")
-CLIENT_ID = os.environ.get("CLIENT_ID", f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}")
+CLIENT_ID = resolve_client_id()
+LOG_FILE = os.environ.get("DESKTOP_WORKER_LOG_FILE", os.path.join("logs", "desktop-worker.log"))
+
+
+def write_log(msg: str):
+    line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    try:
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    print(line)
 
 def post(path: str, payload: dict):
     """HTTP POST请求工具"""
@@ -89,7 +101,7 @@ async def process_task(task):
     post(f"/api/clients/{CLIENT_ID}/tasks/{task_id}/running", {})
 
     try:
-        run_task_with_skus(
+        summary = run_task_with_skus(
             email=account,
             skus=skus,
             image_path=os.path.join(os.path.dirname(__file__), "icon.png"),
@@ -98,7 +110,9 @@ async def process_task(task):
             headless=False,
             use_manual_login=detail_map[account].get("use_manual_login", False),
         )
-        post(f"/api/clients/{CLIENT_ID}/tasks/{task_id}/complete", {"success": True, "result": {"sku_count": len(skus)}})
+        failed = int(summary.get("failed_count", 0))
+        success = failed == 0
+        post(f"/api/clients/{CLIENT_ID}/tasks/{task_id}/complete", {"success": success, "result": summary, "error": "" if success else f"部分SKU失败: {failed}"})
     except Exception as exc:
         post(f"/api/clients/{CLIENT_ID}/tasks/{task_id}/complete", {"success": False, "error": str(exc)})
 
@@ -111,11 +125,11 @@ async def main():
         try:
             # 首先注册客户端
             try:
-                print(f"尝试注册客户端 {CLIENT_ID}")
+                write_log(f"尝试注册客户端 {CLIENT_ID}")
                 post("/api/clients/register", {"client_id": CLIENT_ID, "accounts": accounts})
-                print("客户端注册成功")
+                write_log("客户端注册成功")
             except Exception as e:
-                print(f"注册失败: {e}")
+                write_log(f"注册失败: {e}")
                 await asyncio.sleep(5)
                 continue
 
@@ -126,28 +140,28 @@ async def main():
                     try:
                         post("/api/clients/heartbeat", {"client_id": CLIENT_ID, "accounts": accounts})
                     except Exception as e:
-                        print(f"心跳失败: {e}")
+                        write_log(f"心跳失败: {e}")
                         break
 
                     # 拉取任务
                     try:
                         task = get(f"/api/clients/{CLIENT_ID}/task")
                         if task:
-                            print(f"收到任务: {task['id']}")
+                            write_log(f"收到任务: {task['id']}")
                             await process_task(task)
                     except Exception as e:
-                        print(f"拉取任务失败: {e}")
+                        write_log(f"拉取任务失败: {e}")
 
                     # 等待一段时间后再次轮询
                     await asyncio.sleep(10)
                 except Exception as e:
-                    print(f"轮询失败: {e}")
+                    write_log(f"轮询失败: {e}")
                     break
 
             # 如果出现问题，等待后重新注册
             await asyncio.sleep(5)
         except Exception as e:
-            print(f"主循环错误: {e}")
+            write_log(f"主循环错误: {e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
