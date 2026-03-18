@@ -28,6 +28,15 @@ class AccountService:
         self.get_headless = get_headless
         self.sync_dispatch_status_once = sync_dispatch_status_once
 
+    def _schedule_ui(self, callback: Callable[[], None]) -> None:
+        try:
+            self.root.after(0, callback)
+        except Exception:
+            callback()
+
+    def _refresh_accounts_list(self) -> None:
+        self._schedule_ui(self.update_accounts_list)
+
     def add_account(self):
         """添加新账号"""
         dialog = AccountDialog(self.root, self)
@@ -121,15 +130,39 @@ class AccountService:
 
     def close_selected_accounts(self, selected_indices):
         """关闭选中账号会话"""
+        summary = {"total": len(selected_indices), "success": [], "failed": []}
+
+        for index in selected_indices:
+            account = self.accounts[index]
+            account.login_status = "关闭中"
+            account.task_status = "关闭中"
+        self._refresh_accounts_list()
+
         for index in selected_indices:
             account = self.accounts[index]
 
             try:
                 close_session(account.email)
                 account.login_status = "未登录"
+                account.task_status = "空闲"
+                account.last_error = ""
+                summary["success"].append(account.email)
                 self.append_log(f"✅ 已关闭账号会话: {account.email}")
             except Exception as exc:
+                account.login_status = "关闭失败"
+                account.task_status = "关闭失败"
+                account.last_error = str(exc)
+                summary["failed"].append({"email": account.email, "error": str(exc)})
                 self.append_log(f"❌ 关闭账号会话失败: {account.email}, {exc}")
 
-        self.update_accounts_list()
         self.save_accounts_config()
+        self._refresh_accounts_list()
+        try:
+            self.sync_dispatch_status_once()
+        except Exception as exc:
+            self.append_log(f"⚠️ 同步关闭后的分派状态失败: {exc}")
+
+        self.append_log(
+            f"📊 关闭账号汇总: total={summary['total']}, success={len(summary['success'])}, failed={len(summary['failed'])}"
+        )
+        return summary

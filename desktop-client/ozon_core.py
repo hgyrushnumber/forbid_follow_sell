@@ -127,6 +127,11 @@ def run_task_with_skus(
             operation_name="发送图片任务",
         )
         summary = sku_service.execute(task_page, normalized_skus, image_path, MENU_BUTTONS)
+        account_session_service.promote_task_page_if_support(
+            session,
+            task_page,
+            session_id=summary.get("session_id"),
+        )
         account_session_service.save_after_task(session, account.storage_path)
         return summary
     finally:

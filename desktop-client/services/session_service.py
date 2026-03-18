@@ -225,6 +225,15 @@ class SessionService:
         meta["last_used_at"] = time.time()
         session.touch()
 
+    def update_page_metadata(self, session: BrowserSession, page, **kwargs) -> None:
+        page_id = self._get_page_id(session, page)
+        if not page_id:
+            page_id = self._register_page(session, page, role="shared", operation_name="metadata_update")
+        meta = session.page_meta.setdefault(page_id, {})
+        meta.update(kwargs)
+        meta["last_used_at"] = time.time()
+        session.touch()
+
     def _ensure_primary_page(self, session: BrowserSession):
         self._refresh_page_registry(session)
         if session.page and self._is_page_alive(session.page):
@@ -306,7 +315,7 @@ class SessionService:
             self._mark_page_used(session, page)
             return
 
-        if keep_reused and meta.get("role") == "reused_task":
+        if keep_reused and meta.get("role") in {"reused_task", "support_task"}:
             self._mark_page_used(session, page)
             return
 
