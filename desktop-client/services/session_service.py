@@ -89,6 +89,27 @@ class SessionService:
                 pass
         session.page = primary
 
+    def _enforce_single_tab(self, session: BrowserSession) -> None:
+        """每个邮箱只保留一个标签页，关闭多余标签。"""
+        if not session.context:
+            return
+        try:
+            pages = list(session.context.pages)
+        except Exception:
+            return
+        if not pages:
+            return
+
+        primary = session.page if session.page in pages else pages[0]
+        for p in pages:
+            if p is primary:
+                continue
+            try:
+                p.close()
+            except Exception:
+                pass
+        session.page = primary
+
     def _is_session_alive(self, session: BrowserSession) -> bool:
         """检查会话是否有效"""
         if not session.is_alive or not session.page:
