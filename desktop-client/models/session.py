@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -9,16 +10,18 @@ from typing import Any, Dict, Optional
 @dataclass
 class BrowserSession:
     """
-    浏览器会话模型。
+    邮箱级浏览器会话模型。
 
+    每个邮箱独占一个 Browser / BrowserContext，业务请求在该会话内创建新的 Page。
     这里只保存运行时对象引用，不做序列化。
-    Playwright 的对象类型在运行时注入，因此这里用 Any。
     """
 
     email: str
     storage_path: str
     session_key: str = ""
     browser_instance_id: str = ""
+    owner_thread_id: int = 0
+    owner_thread_name: str = ""
 
     playwright: Optional[Any] = None
     browser: Optional[Any] = None
@@ -35,6 +38,10 @@ class BrowserSession:
             self.session_key = self.build_session_key(self.email)
         if not self.browser_instance_id:
             self.browser_instance_id = self.build_browser_instance_id()
+        if not self.owner_thread_id:
+            self.owner_thread_id = threading.get_ident()
+        if not self.owner_thread_name:
+            self.owner_thread_name = threading.current_thread().name
 
     @staticmethod
     def build_session_key(email: str) -> str:
@@ -64,12 +71,17 @@ class BrowserSession:
     def has_browser(self) -> bool:
         return self.browser is not None
 
+    def belongs_to_current_thread(self) -> bool:
+        return self.owner_thread_id == threading.get_ident()
+
     def summary(self) -> dict:
         return {
             "email": self.email,
             "storage_path": self.storage_path,
             "session_key": self.session_key,
             "browser_instance_id": self.browser_instance_id,
+            "owner_thread_id": self.owner_thread_id,
+            "owner_thread_name": self.owner_thread_name,
             "is_alive": self.is_alive,
             "last_activity": self.last_activity,
             "has_playwright": self.playwright is not None,

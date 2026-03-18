@@ -36,6 +36,79 @@ class PageService:
             sleep(4000)
             self._logger(f"✅ 已回到 messenger 首页: {page.url}")
 
+
+    def has_any_menu_button(self, page, menu_config) -> bool:
+        for item in menu_config:
+            names = [item.get("text"), item.get("ru_text")]
+            for name in [n.strip() for n in names if n and n.strip()]:
+                try:
+                    loc = page.get_by_role("button", name=name)
+                    if loc.count() > 0 and loc.first.is_visible():
+                        return True
+                except Exception:
+                    pass
+
+                try:
+                    loc = page.get_by_text(name, exact=False)
+                    count = loc.count()
+                    for i in range(count):
+                        if loc.nth(i).is_visible():
+                            return True
+                except Exception:
+                    pass
+        return False
+
+    def has_support_compose_prompt(self, page) -> bool:
+        prompt_texts = [
+            "您正在给客服发短信",
+            "您正在给客服发送短信",
+            "Вы пишете в поддержку",
+        ]
+
+        for text in prompt_texts:
+            try:
+                loc = page.get_by_text(text, exact=False)
+                if loc.count() > 0 and loc.first.is_visible():
+                    return True
+            except Exception:
+                pass
+
+        try:
+            body_text = page.locator("body").inner_text(timeout=1000)
+            return any(text in body_text for text in prompt_texts)
+        except Exception:
+            return False
+
+    def has_visible_sku_input(self, page) -> bool:
+        selectors = ["textarea", "input[type='text']"]
+        for selector in selectors:
+            try:
+                loc = page.locator(selector)
+                count = loc.count()
+                for i in range(count):
+                    if loc.nth(i).is_visible():
+                        return True
+            except Exception:
+                pass
+        return False
+
+    def is_reusable_task_page(self, page, menu_config) -> bool:
+        if not self.is_chat_detail_page(page):
+            return False
+
+        try:
+            current_url = page.url or ""
+        except Exception:
+            current_url = ""
+
+        if "id=" not in current_url:
+            return False
+
+        if self.has_any_menu_button(page, menu_config):
+            return True
+
+        return self.has_support_compose_prompt(page) and self.has_visible_sku_input(page)
+
     def wait_for_url_contains(self, page, keyword: str, timeout_ms: int = 20000) -> bool:
         deadline = time.time() + timeout_ms / 1000
         while time.time() < deadline:
