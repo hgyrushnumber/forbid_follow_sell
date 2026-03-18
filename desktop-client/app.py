@@ -79,6 +79,7 @@ class OzonMultiApp:
             get_headless=self.ui.is_headless,
             login_account=self.account_service.login_account_thread,
         )
+        set_logger(self.append_log)
 
         self.append_log("🚀 程序初始化开始")
         self.append_log("📂 加载账号配置")
@@ -256,8 +257,6 @@ def main() -> None:
 
     root = tk.Tk()
     app = OzonMultiApp(root)
-
-    set_logger(app.append_log)
 
     app.append_log("=== Ozon SKU 上传工具 启动 ===")
     app.append_log(f"分派服务器地址: {DISPATCH_SERVER}")

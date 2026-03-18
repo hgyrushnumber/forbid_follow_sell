@@ -56,38 +56,21 @@ class SessionService:
                 session = self.sessions[account.email]
                 if self._is_session_alive(session):
                     self._enforce_single_tab(session)
-                    self._logger(f"✅ 复用已存在的会话: {account.email}")
+                    self._logger(
+                        f"✅ 复用已存在的会话: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+                    )
                     session.last_activity = time.time()
                     return session
 
-                self._logger(f"⚠️ 会话已失效，创建新会话: {account.email}")
+                self._logger(
+                    f"⚠️ 会话已失效，创建新会话: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+                )
                 self._close_session(session)
 
             session = self._create_session(account, headless, slow_mo)
             self._enforce_single_tab(session)
             self.sessions[account.email] = session
             return session
-
-    def _enforce_single_tab(self, session: BrowserSession) -> None:
-        """每个邮箱只保留一个标签页，关闭多余标签。"""
-        if not session.context:
-            return
-        try:
-            pages = list(session.context.pages)
-        except Exception:
-            return
-        if not pages:
-            return
-
-        primary = session.page if session.page in pages else pages[0]
-        for p in pages:
-            if p is primary:
-                continue
-            try:
-                p.close()
-            except Exception:
-                pass
-        session.page = primary
 
     def _enforce_single_tab(self, session: BrowserSession) -> None:
         """每个邮箱只保留一个标签页，关闭多余标签。"""
@@ -126,11 +109,12 @@ class SessionService:
 
     def _create_session(self, account: OzonAccount, headless: bool, slow_mo: int) -> BrowserSession:
         """创建新的浏览器会话"""
-        self._logger(f"🚀 正在启动新的浏览器会话: {account.email}")
-
         session = BrowserSession(
             email=account.email,
             storage_path=account.storage_path
+        )
+        self._logger(
+            f"🚀 正在启动新的浏览器会话: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
         )
 
         session.playwright = sync_playwright().start()
@@ -168,12 +152,16 @@ class SessionService:
         session.is_alive = True
         session.last_activity = time.time()
 
-        self._logger(f"✅ 会话创建成功: {account.email}")
+        self._logger(
+            f"✅ 会话创建成功: email={account.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+        )
         return session
 
     def _close_session(self, session: BrowserSession):
         """关闭会话"""
-        self._logger(f"🛑 正在关闭会话: {session.email}")
+        self._logger(
+            f"🛑 正在关闭会话: email={session.email}, session_key={session.session_key}, browser_instance_id={session.browser_instance_id}"
+        )
 
         try:
             if session.context:

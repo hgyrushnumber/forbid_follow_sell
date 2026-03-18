@@ -26,6 +26,7 @@ HOME_URL = "https://seller.ozon.ru/"
 
 from services.utils import ensure_dirs, log, sleep, set_logger
 from services.session_service import SessionService
+from services.account_session_service import AccountSessionService
 from services.page_service import PageService
 from services.sku_service import SkuService
 from services.page_state_detector import detect_page_type as _detect_page_type, is_messenger_page as _is_messenger_page
@@ -38,15 +39,17 @@ from services.page_state_detector import detect_page_type as _detect_page_type, 
 session_service: Optional['SessionService'] = None
 page_service: Optional['PageService'] = None
 sku_service: Optional['SkuService'] = None
+account_session_service: Optional['AccountSessionService'] = None
 _LOGGER: Callable[[str], None] = print
 
 
 def set_logger(logger_func: Callable[[str], None]):
-    global _LOGGER, session_service, page_service, sku_service
+    global _LOGGER, session_service, page_service, sku_service, account_session_service
     _LOGGER = logger_func
 
     # 延迟导入避免循环依赖
     from services.session_service import SessionService
+    from services.account_session_service import AccountSessionService
     from services.page_service import PageService
     from services.sku_service import SkuService
 
@@ -54,6 +57,13 @@ def set_logger(logger_func: Callable[[str], None]):
     session_service = SessionService(logger_func)
     page_service = PageService(logger_func)
     sku_service = SkuService(logger_func)
+    account_session_service = AccountSessionService(
+        logger_func=logger_func,
+        session_service=session_service,
+        page_service=page_service,
+        target_url=TARGET_URL,
+        sleep_func=sleep,
+    )
 
 
 def log(msg: str):
@@ -68,6 +78,21 @@ def run_account_serialized(email: str, operation: str, action: Callable[[], Any]
     if not session_service:
         raise RuntimeError("未初始化会话服务，请先调用 set_logger")
     return session_service.run_serialized(email, operation, action)
+
+
+def ensure_account_session_ready(
+    email: str,
+    imap_password: str = "",
+    storage_path: str = None,
+    headless: bool = False,
+    slow_mo: int = 200,
+    use_manual_login: bool = False,
+):
+    """统一准备账号会话，供登录和 SKU 任务共同复用。"""
+    if not account_session_service:
+        raise RuntimeError("未初始化账号会话服务，请先调用 set_logger")
+    account = OzonAccount(email, imap_password, storage_path, use_manual_login)
+    return account_session_service.ensure_ready(account, headless=headless, slow_mo=slow_mo)
 
 
 # =========================
@@ -1349,31 +1374,14 @@ def prepare_browser(
     use_manual_login: bool = False,
 ):
     """准备浏览器 - 启动浏览器并确保登录状态"""
-    if not session_service:
-        raise RuntimeError("未初始化会话服务，请先调用 set_logger")
-
-    account = OzonAccount(email, imap_password, storage_path, use_manual_login)
-    session = session_service.get_session(account, headless, slow_mo)
-
-    session.page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
-    log(f"当前页面: {session.page.url}")
-    log(f"当前标题: {session.page.title()}")
-
-    if not page_service:
-        raise RuntimeError("未初始化页面服务，请先调用 set_logger")
-
-    page_service.ensure_logged_in_and_ready(session.page, session.context, account, TARGET_URL)
-
-    try:
-        from services.utils import save_login_state
-        save_login_state(session.context, account.storage_path)
-        log(f"✅ 已刷新并保存登录态: {account.storage_path}")
-    except Exception as e:
-        log(f"⚠️ 保存登录态失败: {e}")
-
-    page_service.normalize_messenger_home(session.page, TARGET_URL)
-
-    log(f"浏览器准备完成，当前页面: {session.page.url}")
+    session = ensure_account_session_ready(
+        email=email,
+        imap_password=imap_password,
+        storage_path=storage_path,
+        headless=headless,
+        slow_mo=slow_mo,
+        use_manual_login=use_manual_login,
+    )
     return session.page
 
 
@@ -1425,46 +1433,26 @@ def run_task_with_skus(
     log(f"📊 读取到 {len(normalized_skus)} 个 SKU")
 
     account = OzonAccount(email, imap_password, storage_path, use_manual_login)
-    session = session_service.get_session(account, headless, slow_mo)
+    session = ensure_account_session_ready(
+        email=email,
+        imap_password=imap_password,
+        storage_path=storage_path,
+        headless=headless,
+        slow_mo=slow_mo,
+        use_manual_login=use_manual_login,
+    )
 
     try:
-        # 检查会话是否有效
-        from services.session_service import SessionService
-        if not isinstance(session_service, SessionService) or not session_service._is_session_alive(session):
-            raise RuntimeError("浏览器页面不可用")
-
-        # 只有当前不在可用页面时，才重新跳目标页
-        current_type = page_service.detect_page_type(session.page)
-        log(f"执行前页面类型: {current_type}")
-
-        if current_type not in ("messenger", "company_select", "login", "ozon_id_phone", "otp"):
-            try:
-                session.page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
-                sleep(3000)
-            except Exception:
-                pass
-
-        page_service.ensure_logged_in_and_ready(session.page, session.context, account, TARGET_URL)
-
-        try:
-            from services.utils import save_login_state
-            save_login_state(session.context, account.storage_path)
-            log(f"✅ 已刷新并保存登录态: {account.storage_path}")
-        except Exception as e:
-            log(f"⚠️ 保存登录态失败: {e}")
-
         log(f"登录完成后页面: {session.page.url}")
         log(f"登录完成后标题: {session.page.title()}")
 
         from services.sku_service import MENU_BUTTONS
         summary = sku_service.execute(session.page, normalized_skus, image_path, MENU_BUTTONS)
 
-        try:
-            from services.utils import save_login_state
-            save_login_state(session.context, account.storage_path)
-            log(f"✅ 任务结束后已保存登录态: {account.storage_path}")
-        except Exception as e:
-            log(f"⚠️ 任务结束后保存登录态失败: {e}")
+        if not account_session_service:
+            raise RuntimeError("未初始化账号会话服务，请先调用 set_logger")
+        account_session_service.save_after_task(session, account.storage_path)
+        log(f"✅ 任务结束后已保存登录态: {account.storage_path}")
 
         log("✅ 当前批次任务执行完成，浏览器保持打开以便复用")
         return summary
