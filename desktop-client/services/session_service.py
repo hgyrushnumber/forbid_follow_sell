@@ -300,6 +300,16 @@ class SessionService:
         if meta is not None:
             meta["last_used_at"] = time.time()
 
+    def tag_existing_page(self, session: BrowserSession, page, role: str, operation_name: str) -> None:
+        page_id = self._get_page_id(session, page)
+        if not page_id:
+            page_id = self._register_page(session, page, role=role, operation_name=operation_name)
+        meta = session.page_meta.setdefault(page_id, {})
+        meta["role"] = role
+        meta["operation_name"] = operation_name
+        meta["last_used_at"] = time.time()
+        session.touch()
+
     def _ensure_primary_page(self, session: BrowserSession):
         self._refresh_page_registry(session)
         if session.page and self._is_page_alive(session.page):
@@ -370,13 +380,18 @@ class SessionService:
         session.touch()
         return page
 
-    def release_page(self, session: BrowserSession, page, keep_primary: bool = True) -> None:
+    def release_page(self, session: BrowserSession, page, keep_primary: bool = True, keep_reused: bool = True) -> None:
         page_id = self._get_page_id(session, page)
         if not page_id:
             return
 
+        meta = session.page_meta.get(page_id) or {}
         is_primary = session.page is page
         if is_primary and keep_primary:
+            self._mark_page_used(session, page)
+            return
+
+        if keep_reused and meta.get("role") == "reused_task":
             self._mark_page_used(session, page)
             return
 
@@ -400,14 +415,6 @@ class SessionService:
             return False
 
         if not session.belongs_to_current_thread():
-            return False
-
-        if not session.belongs_to_current_thread():
-            return False
-
-        with self._browser_guard:
-            browser_entry = self._thread_browsers.get(session.owner_thread_id)
-        if not browser_entry or not self._is_browser_alive(browser_entry.get("browser")):
             return False
 
         try:

@@ -75,6 +75,9 @@ class BrowserSession:
     def belongs_to_current_thread(self) -> bool:
         return self.owner_thread_id == threading.get_ident()
 
+    def belongs_to_current_thread(self) -> bool:
+        return self.owner_thread_id == threading.get_ident()
+
     def summary(self) -> dict:
         return {
             "email": self.email,
