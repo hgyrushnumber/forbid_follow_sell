@@ -17,13 +17,29 @@ class SkuService:
         self._prepared_session_ids = set()
 
     def _extract_session_id(self, url: str) -> Optional[str]:
+        """
+        从URL中提取session_id参数
+        使用正则表达式匹配UUID格式的ID，更高效和准确
+        """
+        if not url:
+            return None
+
+        import re
+        # 正则表达式模式：匹配id=后面的UUID格式字符串
+        pattern = r'[?&]id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+        match = re.search(pattern, url, re.IGNORECASE)
+
+        if match:
+            return match.group(1).strip()
+
+        # 兼容使用urllib.parse的方式作为备用
         try:
             query = parse_qs(urlparse(url).query)
+            values = query.get("id") or []
+            sid = (values[0] if values else "").strip()
+            return sid or None
         except Exception:
             return None
-        values = query.get("id") or []
-        sid = (values[0] if values else "").strip()
-        return sid or None
 
     def _wait_chat_session_id(self, page, timeout_ms: int = 12000) -> Optional[str]:
         deadline = time.time() + timeout_ms / 1000

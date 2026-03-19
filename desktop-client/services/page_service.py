@@ -30,17 +30,77 @@ class PageService:
             url = ""
         return "/app/messenger/" in url and ("group=" in url or "id=" in url)
 
+    def extract_session_id(self, url: str) -> Optional[str]:
+        """
+        从URL中提取session_id参数
+        """
+        if not url:
+            return None
+
+        try:
+            query = parse_qs(urlparse(url).query)
+        except Exception:
+            return None
+        values = query.get("id") or []
+        sid = (values[0] if values else "").strip()
+        return sid or None
+
+    def extract_session_id_with_regex(self, url: str) -> Optional[str]:
+        """
+        使用正则表达式从URL中提取session_id参数
+        匹配格式: id=42c24dbf-26ed-401d-a41a-f1c7088c17bc
+        """
+        if not url:
+            return None
+
+        import re
+        pattern = r'[?&]id=([^&]+)'
+        match = re.search(pattern, url)
+
+        if match:
+            return match.group(1).strip()
+
+        return None
+
     def is_support_v2_page(self, page) -> bool:
+        """
+        判断是否是support_v2页面
+        使用正则表达式匹配URL中的id和group参数，更高效和准确
+        """
         try:
             url = page.url or ""
-            parsed = urlparse(url)
-            query = parse_qs(parsed.query)
         except Exception:
             return False
 
-        group = (query.get("group") or [""])[0].strip().lower()
-        session_id = (query.get("id") or [""])[0].strip()
-        return "/app/messenger/" in url and bool(session_id) and group == "support_v2"
+        # 检查URL中是否包含/app/messenger/
+        if "/app/messenger/" not in url:
+            return False
+
+        # 使用正则表达式匹配id和group参数
+        import re
+        # 匹配id=xxx（支持UUID格式）
+        id_match = re.search(r'[?&]id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', url, re.IGNORECASE)
+        # 匹配group=support_v2
+        group_match = re.search(r'[?&]group=support_v2', url, re.IGNORECASE)
+
+        return bool(id_match and group_match)
+
+    def extract_session_id_with_regex(self, url: str) -> Optional[str]:
+        """
+        使用正则表达式从URL中提取session_id参数
+        匹配格式: id=42c24dbf-26ed-401d-a41a-f1c7088c17bc
+        """
+        if not url:
+            return None
+
+        import re
+        pattern = r'[?&]id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+        match = re.search(pattern, url, re.IGNORECASE)
+
+        if match:
+            return match.group(1).strip()
+
+        return None
 
     def normalize_messenger_home(self, page, TARGET_URL):
         if self.is_chat_detail_page(page):
@@ -92,6 +152,44 @@ class PageService:
         except Exception:
             return False
 
+    def has_closed_session_prompt(self, page) -> bool:
+        """
+        检测是否是已关闭的会话页面
+        如: "Обращение закрыто. Если есть вопрос, создайте новое обращение"
+        或中文版本
+        """
+        closed_texts = [
+            "Обращение закрыто",
+            "Вы больше не можете отвечать на это обращение",
+            "您已无法回复此对话",
+            "对话已关闭",
+            "Обращение завершено",
+            "对话已结束",
+        ]
+
+        for text in closed_texts:
+            try:
+                loc = page.get_by_text(text, exact=False)
+                if loc.count() > 0 and loc.first.is_visible():
+                    return True
+            except Exception:
+                pass
+
+        try:
+            body_text = page.locator("body").inner_text(timeout=1000)
+            return any(text in body_text for text in closed_texts)
+        except Exception:
+            return False
+
+    def is_ready_for_new_chat(self, page) -> bool:
+        """
+        检查页面是否准备好开始新的聊天
+        包括两种情况：
+        1. 显示"您正在给客服发短信"等提示
+        2. 显示已关闭会话提示，可以创建新对话
+        """
+        return self.has_support_compose_prompt(page) or self.has_closed_session_prompt(page)
+
     def has_visible_sku_input(self, page) -> bool:
         selectors = ["textarea", "input[type='text']"]
         for selector in selectors:
@@ -117,14 +215,25 @@ class PageService:
         if "id=" not in current_url:
             return False
 
-        if self.has_any_menu_button(page, menu_config):
-            return True
+        # 如果页面显示"Обращение закрыто"，表示会话已结束，不可复用，需要创建新标签页
+        if self.has_closed_session_prompt(page):
+            return False
 
-        return self.has_support_compose_prompt(page) and self.has_visible_sku_input(page)
+        # 检查是否已经准备好进行聊天（有输入框且有提示文本）
+        if self.has_support_compose_prompt(page):
+            return self.has_visible_sku_input(page)
+
+        # 否则需要检查是否有菜单按钮
+        return self.has_any_menu_button(page, menu_config)
 
     def is_reusable_support_task_page(self, page, menu_config) -> bool:
         if not self.is_support_v2_page(page):
             return False
+
+        # 如果页面显示"Обращение закрыто"，表示会话已结束，不可复用，需要创建新标签页
+        if self.has_closed_session_prompt(page):
+            return False
+
         return self.has_any_menu_button(page, menu_config) or (
             self.has_support_compose_prompt(page) and self.has_visible_sku_input(page)
         )

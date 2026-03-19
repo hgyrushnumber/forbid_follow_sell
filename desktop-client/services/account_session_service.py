@@ -158,9 +158,17 @@ class AccountSessionService:
         candidates = []
         for page_id, page in session.pages.items():
             meta = session.page_meta.get(page_id) or {}
-            if meta.get("role") != "support_task":
-                continue
-            candidates.append((meta.get("last_used_at", 0), page_id, page, meta))
+
+            # 同时考虑标记为support_task的页面和URL符合support_v2特征的页面
+            is_support_role = meta.get("role") == "support_task"
+            is_support_url = False
+            try:
+                is_support_url = self._page_service.is_support_v2_page(page)
+            except Exception:
+                pass
+
+            if is_support_role or is_support_url:
+                candidates.append((meta.get("last_used_at", 0), page_id, page, meta))
 
         candidates.sort(reverse=True)
 
@@ -199,6 +207,7 @@ class AccountSessionService:
 
         for _, page_id, page, meta in candidates:
             try:
+                # 首先检查是否是可复用的support_v2页面
                 if self._page_service.is_reusable_support_task_page(page, MENU_BUTTONS):
                     self._mark_support_task_page(
                         session,
@@ -215,6 +224,7 @@ class AccountSessionService:
                     session.touch()
                     return page
 
+                # 然后检查是否是可复用的其他任务页面
                 if self._page_service.is_reusable_task_page(page, MENU_BUTTONS):
                     if page is session.page:
                         self._session_service.tag_existing_page(
