@@ -1,7 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_data_files
 
-datas = [('icon.png', '.'), ('C:\\Users\\ASUS\\AppData\\Local\\ms-playwright\\chromium-1187', 'ms-playwright\\chromium-1187')]
+datas = [
+    ('icon.png', '.'),
+    ('accounts', 'accounts'),
+    ('accounts_config.json', '.'),
+    ('ozon_accounts_config.json', '.'),
+    ('ozon_auth.json', '.'),
+    ('C:\\Users\\ASUS\\AppData\\Local\\ms-playwright\\chromium-1187', 'ms-playwright\\chromium-1187')
+]
 datas += collect_data_files('playwright_stealth')
 
 
@@ -40,4 +47,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['icon.ico'],
+    onefile=True,
 )

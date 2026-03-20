@@ -8,6 +8,9 @@ import datetime
 from datetime import datetime as dt, timezone
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+# 从统一日志模块导入
+from utils.logger import set_logger, log
+
 # 配置常量
 DEFAULT_STORAGE_DIR = "accounts"
 DEBUG_DIR = "debug_artifacts"
@@ -34,18 +37,6 @@ CANDIDATE_HEADERS = [
     "артикул",
     "sku продавца",
 ]
-
-_LOGGER = print
-
-
-def set_logger(logger_func):
-    global _LOGGER
-    _LOGGER = logger_func
-
-
-def log(msg: str):
-    _LOGGER(msg)
-
 
 def sleep(ms: int):
     time.sleep(ms / 1000)

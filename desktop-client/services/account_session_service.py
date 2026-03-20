@@ -34,6 +34,20 @@ class AccountSessionService:
         except Exception as exc:
             self._logger(f"⚠️ 保存登录态失败: {exc}")
 
+    def _is_on_valid_messenger_or_dashboard(self, page) -> bool:
+        """检查页面是否已在有效的 messenger 或 dashboard 页面（含聊天详情页）。"""
+        try:
+            url = (page.url or "").lower()
+        except Exception:
+            return False
+        # 允许 dashboard 页面
+        if "/app/dashboard" in url:
+            return True
+        # 允许 messenger 首页或聊天详情页
+        if "/app/messenger" in url:
+            return True
+        return False
+
     def is_account_logged_in(self, page):
         """更严格的登录状态校验"""
         try:
@@ -52,6 +66,7 @@ class AccountSessionService:
         except Exception as e:
             self._logger(f"⚠️ 登录状态校验失败: {e}")
             return False
+
 
     def ensure_ready(
         self,

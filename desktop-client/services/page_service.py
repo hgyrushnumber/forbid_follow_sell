@@ -104,10 +104,27 @@ class PageService:
 
     def normalize_messenger_home(self, page, TARGET_URL):
         if self.is_chat_detail_page(page):
-            self._logger("ℹ️ 当前处于具体会话页，准备回到 messenger 首页")
-            page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
-            sleep(4000)
-            self._logger(f"✅ 已回到 messenger 首页: {page.url}")
+            try:
+                current_url = page.url or ""
+            except Exception:
+                current_url = ""
+            session_id = self.extract_session_id(current_url)
+            if session_id:
+                self._logger(f"ℹ️ 当前处于具体会话页 {session_id}，保留状态并跳过跳转")
+                return session_id
+            self._logger("ℹ️ 当前处于具体会话页，但未识别到会话id，继续跳转 messenger 首页")
+        else:
+            try:
+                current_url = page.url or ""
+            except Exception:
+                current_url = ""
+            if not (self.is_chat_detail_page(page) and self.extract_session_id(current_url)):
+                page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+                sleep(4000)
+                self._logger(f"✅ 已回到 messenger 首页: {page.url}")
+            else:
+                sid = self.extract_session_id(current_url)
+                self._logger(f"ℹ️ 保留聊天会话 {sid}，跳过跳转到 TARGET_URL")
 
 
     def has_any_menu_button(self, page, menu_config) -> bool:
@@ -753,7 +770,15 @@ class PageService:
             if not ok:
                 return False
             try:
-                page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+                try:
+            current_url = page.url or ""
+        except Exception:
+            current_url = ""
+        if not (self.is_chat_detail_page(page) and self.extract_session_id(current_url)):
+            page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+        else:
+            sid = self.extract_session_id(current_url)
+            self._logger(f"ℹ️ 保留聊天会话 {sid}，跳过跳转到 TARGET_URL")
                 sleep(3000)
             except Exception:
                 pass
@@ -838,7 +863,15 @@ class PageService:
                 raise RuntimeError("自动登录恢复失败")
 
             try:
-                page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+                try:
+            current_url = page.url or ""
+        except Exception:
+            current_url = ""
+        if not (self.is_chat_detail_page(page) and self.extract_session_id(current_url)):
+            page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+        else:
+            sid = self.extract_session_id(current_url)
+            self._logger(f"ℹ️ 保留聊天会话 {sid}，跳过跳转到 TARGET_URL")
                 sleep(3000)
             except Exception:
                 pass
@@ -863,7 +896,15 @@ class PageService:
                 return
 
             self._logger("⚠️ 点击下一步后未自动进入目标页，尝试手动打开 TARGET_URL")
+            try:
+            current_url = page.url or ""
+        except Exception:
+            current_url = ""
+        if not (self.is_chat_detail_page(page) and self.extract_session_id(current_url)):
             page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+        else:
+            sid = self.extract_session_id(current_url)
+            self._logger(f"ℹ️ 保留聊天会话 {sid}，跳过跳转到 TARGET_URL")
             sleep(3000)
 
             if self.is_messenger_page(page):
@@ -874,7 +915,15 @@ class PageService:
 
         if "/signin" in page.url or "/registration" in page.url:
             self._logger("⚠️ 当前仍在登录相关页面，尝试再次打开目标页")
+            try:
+            current_url = page.url or ""
+        except Exception:
+            current_url = ""
+        if not (self.is_chat_detail_page(page) and self.extract_session_id(current_url)):
             page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+        else:
+            sid = self.extract_session_id(current_url)
+            self._logger(f"ℹ️ 保留聊天会话 {sid}，跳过跳转到 TARGET_URL")
             sleep(3000)
 
             if self.is_messenger_page(page):
@@ -889,7 +938,15 @@ class PageService:
                 if not ok:
                     raise RuntimeError("再次尝试自动登录恢复失败")
 
-                page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+                try:
+            current_url = page.url or ""
+        except Exception:
+            current_url = ""
+        if not (self.is_chat_detail_page(page) and self.extract_session_id(current_url)):
+            page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+        else:
+            sid = self.extract_session_id(current_url)
+            self._logger(f"ℹ️ 保留聊天会话 {sid}，跳过跳转到 TARGET_URL")
                 sleep(3000)
                 if self.is_messenger_page(page):
                     from services.utils import save_login_state
