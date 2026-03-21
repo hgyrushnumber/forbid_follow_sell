@@ -16,3 +16,4 @@ dispatch-backend/.env
 node_modules/*
 DockerFile/*
 **/logs/*
+desktop-client/doc/robustness_issues.md

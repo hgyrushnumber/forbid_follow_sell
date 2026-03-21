@@ -54,6 +54,48 @@ class SkuService:
             sleep(300)
         return None
 
+    def _detect_language(self, page) -> str:
+        """检测当前页面语言，返回 'ru' 或 'zh'。"""
+        try:
+            cookies = page.context.cookies()
+            for cookie in cookies:
+                if cookie.get("name") == "x-o3-language":
+                    lang = cookie.get("value", "")
+                    if lang == "ru":
+                        return "ru"
+                    if lang in ("zh-Hans", "zh", "zh-CN", "zh_Hans"):
+                        return "zh"
+        except Exception as e:
+            self._logger(f"⚠️ 读取 cookie 失败: {e}")
+
+        # 兜底：根据页面文本判断
+        try:
+            body_text = page.locator("body").inner_text(timeout=2000)
+            if "Товары и Цены" in body_text or "Контроль качества" in body_text:
+                return "ru"
+            if "商品和价格" in body_text or "质量监督" in body_text:
+                return "zh"
+        except Exception:
+            pass
+
+        return "zh"  # 默认中文
+
+    def _filter_menu_by_language(self, menu_config: list, lang: str) -> list:
+        """根据语言过滤菜单项。"""
+        filtered = []
+        for item in menu_config:
+            if lang == "ru":
+                # 俄文：使用 ru_text，跳过 text 为 None 的项（如果有）
+                ru_text = (item.get("ru_text") or "").strip()
+                if ru_text:
+                    filtered.append({"text": ru_text, "ru_text": ru_text})
+            else:
+                # 中文：使用 text，跳过 text 为 None 的项
+                text = (item.get("text") or "").strip()
+                if text:
+                    filtered.append({"text": text, "ru_text": item.get("ru_text", "")})
+        return filtered
+
     def navigate_menu(self, page, menu_config):
         session_id = self._wait_chat_session_id(page)
         if session_id and session_id in self._prepared_session_ids:
@@ -66,7 +108,12 @@ class SkuService:
             self.page_service.normalize_messenger_home(page, TARGET_URL)
             self._logger("ℹ️ 当前尚未进入投诉会话页，将按菜单路径首次进入目标会话")
 
-        for idx, item in enumerate(menu_config, 1):
+        # 检测语言并过滤菜单
+        lang = self._detect_language(page)
+        self._logger(f"ℹ️ 检测到页面语言: {lang}")
+        filtered_menu = self._filter_menu_by_language(menu_config, lang)
+
+        for idx, item in enumerate(filtered_menu, 1):
             text = (item.get("text") or "").strip()
             ru_text = (item.get("ru_text") or "").strip()
 
@@ -74,7 +121,7 @@ class SkuService:
                 self._logger(f"⚠️ 菜单配置为空，跳过第 {idx} 项")
                 continue
 
-            self._logger(f"🎯 菜单导航 {idx}/{len(menu_config)}: {text or ru_text}")
+            self._logger(f"🎯 菜单导航 {idx}/{len(filtered_menu)}: {text or ru_text}")
             self.page_service.click_menu_button(page, text or ru_text, ru_text or None)
 
         resolved_session_id = session_id or self._wait_chat_session_id(page, timeout_ms=15000)
