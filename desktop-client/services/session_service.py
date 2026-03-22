@@ -416,34 +416,24 @@ class SessionService:
         except Exception as e:
             self._logger(f"⚠️ 保存登录态失败: {e}")
 
-        self._refresh_page_registry(session)
-        for page in list(session.pages.values()):
+        def close_without_timeout(obj, close_method):
             try:
-                if self._is_page_alive(page):
-                    page.close()
+                if obj:
+                    # 使用 try/except 来快速关闭，避免等待超时
+                    close_method()
             except Exception:
                 pass
+
+        self._refresh_page_registry(session)
+        for page in list(session.pages.values()):
+            close_without_timeout(page, lambda: page.close())
         session.pages.clear()
         session.page_meta.clear()
         session.page = None
 
-        try:
-            if session.context:
-                session.context.close()
-        except Exception:
-            pass
-
-        try:
-            if session.browser:
-                session.browser.close()
-        except Exception:
-            pass
-
-        try:
-            if session.playwright:
-                session.playwright.stop()
-        except Exception:
-            pass
+        close_without_timeout(session.context, lambda: session.context.close())
+        close_without_timeout(session.browser, lambda: session.browser.close())
+        close_without_timeout(session.playwright, lambda: session.playwright.stop())
 
         session.context = None
         session.browser = None
@@ -453,7 +443,19 @@ class SessionService:
     def close_all_sessions(self):
         """关闭所有会话。"""
         with self._locks_guard:
+            # 先唤醒所有阻塞的 worker 线程，防止 event.wait() 无限等待
+            for worker in self._workers.values():
+                # 发送一个空任务来解除阻塞
+                try:
+                    worker["queue"].put_nowait(None)
+                except Exception:
+                    pass
+
             emails = list(self.sessions.keys())
+
+        # 给 worker 线程一点时间响应
+        time.sleep(0.1)
+
         for email in emails:
             self.close_session(email)
 

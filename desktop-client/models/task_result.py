@@ -8,14 +8,15 @@ from typing import Any, Dict, List, Optional
 class SkuProcessResult:
     """
     单个 SKU 的处理结果。
-    后面你如果要做更清晰的“接口判定 / 状态回传”，这个结构会很好用。
+    后面你如果要做更清晰的"接口判定 / 状态回传"，这个结构会很好用。
     """
 
     sku: str
     success: bool = False
-    stage: str = "init"   # init / search / upload / submit / finish / failed
+    stage: str = "init"   # init / search / upload / submit / verify / finish / failed
     message: str = ""
     details: Dict[str, Any] = field(default_factory=dict)
+    verification_screenshot: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -24,6 +25,7 @@ class SkuProcessResult:
             "stage": self.stage,
             "message": self.message,
             "details": self.details,
+            "verification_screenshot": self.verification_screenshot,
         }
 
 

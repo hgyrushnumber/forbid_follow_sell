@@ -53,7 +53,8 @@ def debug_path(name: str, ext: str) -> str:
 
 def save_login_state(context, path: str):
     try:
-        context.storage_state(path=path)
+        # 缩短超时时间，避免长时间阻塞
+        context.storage_state(path=path, timeout=5000)
         log(f"✅ 登录态已导出到 {path}")
         return True
     except Exception as e:

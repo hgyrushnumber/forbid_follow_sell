@@ -21,6 +21,7 @@ from services.task_service import TaskService
 from services.account_service import AccountService
 from services.client_identity import resolve_client_id
 from ui.main_window import MainWindow
+from ui.task_history_window import TaskHistoryWindow
 from ozon_core import close_all_sessions, set_logger
 
 # 加载.env配置文件
@@ -51,6 +52,7 @@ class OzonMultiApp:
             on_login_selected=self.login_selected_accounts,
             on_run_task_selected=self.run_task_on_selected,
             on_close_selected=self.close_selected_accounts,
+            on_view_task_history=self.view_task_history,
             on_account_select=self.on_account_select,
         )
 
@@ -252,6 +254,11 @@ class OzonMultiApp:
                 self.root.after(0, lambda err=str(exc): self.ui.set_status_message(f"❌ 关闭账号失败: {err}"))
 
         threading.Thread(target=_runner, daemon=True).start()
+
+    def view_task_history(self) -> None:
+        """打开任务历史窗口"""
+        records = self.task_service.get_task_records()
+        TaskHistoryWindow(self.root, self.task_service, records)
 
     def on_close(self) -> None:
         from tkinter import messagebox

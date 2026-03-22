@@ -2,12 +2,15 @@
 # -*- coding: utf-8 -*-
 
 import time
+import datetime
+import os
 from typing import Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 from services.page_service import PageService
 from services.utils import sleep
-from services.constants import MENU_BUTTONS
-from services.constants import TARGET_URL
+from services.constants import MENU_BUTTONS, TARGET_URL
+from services.constants import RU_SKU_VERIFICATION_TEXT, RU_SKU_VERIFICATION_TIMEOUT, ZH_LANGUAGE_CODE
+from models import SkuProcessResult
 
 
 class SkuService:
@@ -15,7 +18,65 @@ class SkuService:
         self._logger = logger_func
         self.page_service = PageService(logger_func)
         self._prepared_session_ids = set()
+        self.verification_screenshots_dir = "verification_screenshots"
+        os.makedirs(self.verification_screenshots_dir, exist_ok=True)
 
+    def _save_verification_screenshot(self, page, sku: str) -> Optional[str]:
+        """保存验证成功后的截图，返回截图路径"""
+        try:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_sku = sku.replace("/", "_").replace("\\", "_").replace(":", "_")[:50]
+            filename = f"sku_verified_{safe_sku}_{timestamp}.png"
+            screenshot_path = os.path.join(self.verification_screenshots_dir, filename)
+            page.screenshot(path=screenshot_path, full_page=True)
+            self._logger(f"📸 验证截图已保存: {screenshot_path}")
+            return screenshot_path
+        except Exception as e:
+            self._logger(f"⚠️ 保存验证截图失败: {e}")
+            return None
+
+    def _wait_for_sku_verification_ru(self, page, sku: str, timeout_sec: int = RU_SKU_VERIFICATION_TIMEOUT) -> Optional[str]:
+        """等待俄文验证成功消息，返回验证截图路径"""
+        deadline = time.time() + timeout_sec
+        verification_text = RU_SKU_VERIFICATION_TEXT
+
+        self._logger(f"⏳ 等待俄文验证成功提示（包含 '{verification_text}'），超时: {timeout_sec}秒")
+
+        while time.time() < deadline:
+            try:
+                body_text = page.locator("body").inner_text(timeout=1000)
+                if verification_text in body_text:
+                    self._logger(f"✅ 检测到验证成功提示: {verification_text}")
+                    return self._save_verification_screenshot(page, sku)
+
+                elapsed = time.time() - (deadline - timeout_sec)
+                if elapsed > 5:  # 每5秒输出一次进度
+                    self._logger(f"⏳ 等待验证中... {int(elapsed)}秒")
+                    deadline = time.time() + timeout_sec  # 重置进度输出计时
+            except Exception:
+                pass
+            sleep(500)
+
+        self._logger(f"⚠️ 等待验证成功提示超时: {sku}")
+        return None
+
+    def _check_language_before_process(self, page) -> str:
+        """检查语言并返回，如果是 zh-hans 则抛出异常"""
+        lang = self._detect_language(page)
+        if lang == "zh":
+            # 进一步检查是否为 zh-hans
+            try:
+                cookies = page.context.cookies()
+                for cookie in cookies:
+                    if cookie.get("name") == "x-o3-language":
+                        lang_value = cookie.get("value", "")
+                        if lang_value.lower() in ("zh-hans", "zh_hans"):
+                            raise RuntimeError(f"当前语言为 {lang_value}，暂不支持验证，跳过处理")
+                            break
+            except Exception as e:
+                if "暂不支持" in str(e):
+                    raise
+        return lang
     def _extract_session_id(self, url: str) -> Optional[str]:
         """
         从URL中提取session_id参数
@@ -132,52 +193,82 @@ class SkuService:
             self._logger("⚠️ 菜单点击后仍未识别到投诉会话 id，本次不缓存会话状态")
         return resolved_session_id
 
-    def process_single_sku(self, page, sku: str, image_path: str):
+    def process_single_sku(self, page, sku: str, image_path: str) -> SkuProcessResult:
         self._logger(f"📦 开始处理 SKU: {sku}")
 
-        sku_input = self.page_service.find_sku_input(page)
-        self.page_service.set_input_value(sku_input, sku)
+        result = SkuProcessResult(sku=sku, stage="init")
 
-        self.page_service.press_enter(sku_input)
-        sleep(2000)
+        try:
+            result.stage = "search"
 
-        self.page_service.wait_for_search_result(page, sku)
+            sku_input = self.page_service.find_sku_input(page)
+            self.page_service.set_input_value(sku_input, sku)
+            self.page_service.press_enter(sku_input)
+            sleep(2000)
 
-        file_input = self.page_service.find_file_input(page)
-        file_input.set_input_files(image_path)
-        self._logger("✅ 图片已选择，等待发送按钮")
-        sleep(1500)
+            self.page_service.wait_for_search_result(page, sku)
 
-        self.page_service.click_send_button(page, file_input, timeout_ms=20000)
-        sleep(2000)
+            result.stage = "upload"
 
-        self.page_service.wait_for_upload_finished(page)
-        self._logger(f"✅ SKU 处理完成: {sku}")
+            file_input = self.page_service.find_file_input(page)
+            file_input.set_input_files(image_path)
+            self._logger("✅ 图片已选择，等待发送按钮")
+            sleep(1500)
+
+            self.page_service.click_send_button(page, file_input, timeout_ms=20000)
+            sleep(2000)
+
+            self.page_service.wait_for_upload_finished(page)
+
+            result.stage = "verify"
+
+            lang = self._check_language_before_process(page)
+
+            if lang == "ru":
+                screenshot_path = self._wait_for_sku_verification_ru(page, sku)
+                result.verification_screenshot = screenshot_path or ""
+                if screenshot_path:
+                    result.stage = "finish"
+                    result.success = True
+                    result.message = "验证成功"
+                else:
+                    result.stage = "failed"
+                    result.message = "等待验证超时"
+            else:
+                result.stage = "finish"
+                result.success = True
+                result.message = f"语言 {lang} 跳过验证"
+
+            self._logger(f"✅ SKU 处理完成: {sku}, 状态: {result.stage}")
+
+        except Exception as exc:
+            result.stage = "failed"
+            result.message = str(exc)
+            self._logger(f"❌ SKU 处理失败: {sku}, 错误: {exc}")
+
+        return result
 
     def execute(self, page, skus: List[str], image_path: str, menu_config) -> Dict[str, object]:
         session_id = self.navigate_menu(page, menu_config)
         self._logger(f"✅ 菜单导航完成，开始处理 {len(skus)} 个 SKU")
 
-        success_items: List[str] = []
-        failed_items: List[Dict[str, str]] = []
+        processed_results: List[SkuProcessResult] = []
 
         for i, sku in enumerate(skus, 1):
             self._logger(f"➡️ {i}/{len(skus)}")
-            try:
-                self.process_single_sku(page, sku, image_path)
-                success_items.append(sku)
-            except Exception as exc:
-                failed_items.append({"sku": sku, "error": str(exc)})
-                self._logger(f"❌ SKU 处理失败: {sku}, 错误: {exc}")
+            result = self.process_single_sku(page, sku, image_path)
+            processed_results.append(result)
             sleep(1200)
+
+        success_count = sum(1 for r in processed_results if r.success)
+        failed_count = len(processed_results) - success_count
 
         summary = {
             "session_id": session_id,
             "total": len(skus),
-            "success_count": len(success_items),
-            "failed_count": len(failed_items),
-            "success_skus": success_items,
-            "failed_items": failed_items,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "processed_skus": [r.to_dict() for r in processed_results],
         }
         self._logger(
             f"📊 SKU执行统计: total={summary['total']}, success={summary['success_count']}, failed={summary['failed_count']}"

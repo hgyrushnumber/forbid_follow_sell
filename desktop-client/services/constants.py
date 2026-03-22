@@ -39,19 +39,17 @@ DEFAULT_RETRY_COUNT = 3
 # 默认超时时间（秒）
 DEFAULT_TIMEOUT = 30
 
-# =========================
-# 页面操作常量
-# =========================
+# 俄文 SKU 验证提示文本
+RU_SKU_VERIFICATION_TEXT = "Скрыли товар"
 
-# =========================
-# 任务执行常量
-# =========================
+# 俄文 SKU 验证等待超时时间（秒）
+RU_SKU_VERIFICATION_TIMEOUT = 30
 
-# 默认重试次数
-DEFAULT_RETRY_COUNT = 3
+# 中文语言代码
+ZH_LANGUAGE_CODE = "zh"
 
-# 默认超时时间（秒）
-DEFAULT_TIMEOUT = 30
+# 中文（简体 zh-Hans）语言代码
+ZH_HANS_LANGUAGE_CODE = "zh-hans"
 
 # =========================
 # 页面操作常量

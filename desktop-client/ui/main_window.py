@@ -32,6 +32,7 @@ class MainWindow:
         on_login_selected: Callable[[], None],
         on_run_task_selected: Callable[[], None],
         on_close_selected: Callable[[], None],
+        on_view_task_history: Callable[[], None],
         on_account_select: Callable,
     ):
         self.root = root
@@ -49,6 +50,7 @@ class MainWindow:
             on_login_selected=on_login_selected,
             on_run_task_selected=on_run_task_selected,
             on_close_selected=on_close_selected,
+            on_view_task_history=on_view_task_history,
             on_account_select=on_account_select,
         )
 
@@ -200,6 +202,7 @@ class MainWindow:
         ttk.Button(action_card, text="🚀 登录选中账号", command=callbacks["on_login_selected"], style="Primary.TButton").pack(fill=tk.X, pady=4)
         ttk.Button(action_card, text="🎯 执行任务到选中账号", command=callbacks["on_run_task_selected"], style="Primary.TButton").pack(fill=tk.X, pady=4)
         ttk.Button(action_card, text="🛑 关闭选中账号", command=callbacks["on_close_selected"], style="Secondary.TButton").pack(fill=tk.X, pady=4)
+        ttk.Button(action_card, text="📋 查看任务历史", command=callbacks["on_view_task_history"], style="Secondary.TButton").pack(fill=tk.X, pady=4)
 
         tips_card = ttk.LabelFrame(right, text="运行说明", style="Card.TLabelframe", padding=14)
         tips_card.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
