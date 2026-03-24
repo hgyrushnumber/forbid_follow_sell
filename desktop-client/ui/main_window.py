@@ -3,7 +3,7 @@
 
 import os
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Callable, List
 
 from models import AccountInfo
@@ -168,34 +168,64 @@ class MainWindow:
         ttk.Label(detail_card, textvariable=self.login_count_var, style="Body.TLabel").grid(row=3, column=1, sticky="w", pady=4)
 
         task_card = ttk.LabelFrame(right, text="任务配置", style="Card.TLabelframe", padding=14)
-        task_card.pack(fill=tk.X)
-        task_card.columnconfigure(1, weight=1)
-        ttk.Label(task_card, text="SKU 列表", style="Title.TLabel").grid(row=0, column=0, sticky="ne", padx=(0, 10), pady=6)
-        self.sku_text = tk.Text(
-            task_card,
+        task_card.pack(fill=tk.BOTH, expand=True)
+
+        # SKU 列表区域
+        sku_header = ttk.Frame(task_card, style="App.TFrame")
+        sku_header.pack(fill=tk.X)
+        ttk.Label(sku_header, text="SKU 列表", style="Title.TLabel").pack(side="left", padx=(0, 10), pady=(6, 0))
+        self.sku_count_var = tk.StringVar(value="共 0 个 SKU")
+        ttk.Label(sku_header, textvariable=self.sku_count_var, style="Caption.TLabel", foreground=self.SUCCESS).pack(side="right", pady=(6, 0))
+
+        # SKU 列表容器（左侧 Listbox + 右侧按钮）
+        sku_container = ttk.Frame(task_card, style="App.TFrame")
+        sku_container.pack(fill=tk.BOTH, expand=True, pady=(4, 6))
+
+        # 左侧：Listbox + 滚动条
+        sku_list_wrap = ttk.Frame(sku_container, style="App.TFrame")
+        sku_list_wrap.pack(side="left", fill=tk.BOTH, expand=True)
+        self.sku_listbox = tk.Listbox(
+            sku_list_wrap,
             height=10,
-            width=44,
+            font=("Consolas", 10),
             bg="#f8fafc",
             fg="#111827",
             relief=tk.FLAT,
             highlightthickness=1,
             highlightbackground=self.BORDER,
-            font=("Consolas", 10),
         )
-        self.sku_text.grid(row=0, column=1, columnspan=2, sticky="ew", pady=6)
-        self.sku_text.insert(tk.END, "SKU001\nSKU002,SKU003\nSKU004")
+        self.sku_listbox.pack(side="left", fill=tk.BOTH, expand=True)
+        sku_scrollbar = ttk.Scrollbar(sku_list_wrap, orient="vertical", command=self.sku_listbox.yview)
+        sku_scrollbar.pack(side="right", fill="y")
+        self.sku_listbox.configure(yscrollcommand=sku_scrollbar.set)
 
-        ttk.Label(task_card, text="图片文件", style="Title.TLabel").grid(row=1, column=0, sticky="e", padx=(0, 10), pady=6)
+        # 右侧：操作按钮
+        sku_btn_frame = ttk.Frame(sku_container, style="App.TFrame")
+        sku_btn_frame.pack(side="right", padx=(10, 0))
+        ttk.Button(sku_btn_frame, text="➕ 添加", command=self._add_sku, style="Secondary.TButton", width=8).pack(pady=2)
+        ttk.Button(sku_btn_frame, text="✏️ 编辑", command=self._edit_sku, style="Secondary.TButton", width=8).pack(pady=2)
+        ttk.Button(sku_btn_frame, text="🗑️ 删除", command=self._delete_sku, style="Secondary.TButton", width=8).pack(pady=2)
+        ttk.Button(sku_btn_frame, text="📥 导入", command=self._import_skus, style="Secondary.TButton", width=8).pack(pady=2)
+        ttk.Button(sku_btn_frame, text="🧹 清空", command=self._clear_skus, style="Secondary.TButton", width=8).pack(pady=2)
+
+        # 绑定快捷键
+        self.sku_listbox.bind("<Double-Button-1>", lambda e: self._edit_sku())
+        self.sku_listbox.bind("<Delete>", lambda e: self._delete_sku())
+
+        # 图片文件路径
+        ttk.Label(task_card, text="图片文件", style="Title.TLabel").pack(anchor="e", padx=(0, 10), pady=(8, 6))
+        image_path_row = ttk.Frame(task_card, style="App.TFrame")
+        image_path_row.pack(fill=tk.X, pady=(0, 6))
         self.image_var = tk.StringVar(value="icon.png")
         self.image_var.trace_add("write", self._on_image_path_changed)
-        ttk.Entry(task_card, textvariable=self.image_var).grid(row=1, column=1, sticky="ew", pady=6)
-        ttk.Button(task_card, text="浏览…", command=self.choose_image, style="Secondary.TButton").grid(row=1, column=2, padx=(8, 0), pady=6)
+        ttk.Entry(image_path_row, textvariable=self.image_var).pack(side="left", fill=tk.X, expand=True)
+        ttk.Button(image_path_row, text="浏览…", command=self.choose_image, style="Secondary.TButton").pack(side="left", padx=(6, 0))
         self.image_hint_var = tk.StringVar(value="请确认图片文件存在后再执行任务")
         self.image_hint_label = tk.Label(task_card, textvariable=self.image_hint_var, bg=self.CARD_BG, fg=self.MUTED, anchor="w", font=("Microsoft YaHei UI", 9))
-        self.image_hint_label.grid(row=2, column=1, columnspan=2, sticky="w", pady=(0, 8))
+        self.image_hint_label.pack(fill="x", pady=(0, 8))
 
         self.headless_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(task_card, text="无头模式", variable=self.headless_var).grid(row=3, column=1, columnspan=2, sticky="w", pady=(0, 6))
+        ttk.Checkbutton(task_card, text="无头模式", variable=self.headless_var).pack(anchor="w", pady=(0, 6))
 
         action_card = ttk.LabelFrame(right, text="快速操作", style="Card.TLabelframe", padding=14)
         action_card.pack(fill=tk.X, pady=(12, 0))
@@ -340,10 +370,69 @@ class MainWindow:
         self._sync_selection_markers()
         callback(event)
 
+
+    def _refresh_sku_count(self) -> None:
+        self.sku_count_var.set(f"共 {self.sku_listbox.size()} 个 SKU")
+
+    def _get_skus_from_listbox(self) -> List[str]:
+        return list(self.sku_listbox.get(0, tk.END))
+
+    def _insert_sku(self, sku: str) -> None:
+        sku = sku.strip()
+        if not sku:
+            return
+        if sku in self._get_skus_from_listbox():
+            return
+        self.sku_listbox.insert(tk.END, sku)
+        self._refresh_sku_count()
+
+    def _add_sku(self) -> None:
+        value = simpledialog.askstring("添加 SKU", "请输入 SKU（支持逗号/换行分隔）:")
+        if not value:
+            return
+        tokens = [seg.strip() for line in value.splitlines() for seg in line.split(",")]
+        for token in tokens:
+            self._insert_sku(token)
+
+    def _edit_sku(self) -> None:
+        selection = self.sku_listbox.curselection()
+        if not selection:
+            return
+        index = selection[0]
+        current = self.sku_listbox.get(index)
+        value = simpledialog.askstring("编辑 SKU", "修改 SKU:", initialvalue=current)
+        if not value:
+            return
+        self.sku_listbox.delete(index)
+        self.sku_listbox.insert(index, value.strip())
+        self._refresh_sku_count()
+
+    def _delete_sku(self) -> None:
+        selection = list(self.sku_listbox.curselection())
+        for idx in reversed(selection):
+            self.sku_listbox.delete(idx)
+        self._refresh_sku_count()
+
+    def _import_skus(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            messagebox.showerror("导入失败", "读取文件失败，请确认文件可访问。")
+            return
+        tokens = [seg.strip() for line in lines for seg in line.split(",")]
+        for token in tokens:
+            self._insert_sku(token)
+
+    def _clear_skus(self) -> None:
+        self.sku_listbox.delete(0, tk.END)
+        self._refresh_sku_count()
+
     def get_skus(self) -> List[str]:
-        raw = self.sku_text.get("1.0", tk.END)
-        tokens = [seg.strip() for line in raw.splitlines() for seg in line.split(",")]
-        return [t for t in tokens if t]
+        return [sku for sku in self._get_skus_from_listbox() if sku]
 
     def get_image_path(self) -> str:
         return self.image_var.get().strip()

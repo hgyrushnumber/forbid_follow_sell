@@ -58,7 +58,10 @@ class TaskHistoryWindow:
         self.window.grab_set()
         self.window.configure(bg=self.BG_COLOR)
 
+        # 先构建 UI，确保所有控件都已初始化
         self._build_ui()
+
+        # UI 构建完成后再执行以下操作
         self._refresh_task_list()
         self._start_auto_refresh()
 
@@ -85,6 +88,8 @@ class TaskHistoryWindow:
         style.configure("Body.TLabel", background=self.CARD_BG, foreground="#1e293b", font=("Microsoft YaHei UI", 10))
         style.configure("Treeview", rowheight=28, font=("Microsoft YaHei UI", 9), background="#fbfdff", fieldbackground="#fbfdff")
         style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 10, "bold"), background="#e8eef8", foreground=self.DARK)
+        style.configure("Primary.TButton", font=("Microsoft YaHei UI", 10, "bold"), padding=(12, 10))
+        style.configure("Secondary.TButton", font=("Microsoft YaHei UI", 10), padding=(10, 8))
 
     def _build_ui(self) -> None:
         self._setup_style()
@@ -131,7 +136,7 @@ class TaskHistoryWindow:
         table_wrap = ttk.Frame(list_card, style="App.TFrame")
         table_wrap.pack(fill=tk.BOTH, expand=True)
         columns = ("task_id", "account", "type", "status", "sku_count", "start_time", "duration")
-        self.tasks_tree = ttk.Treeview(table_wrap, columns=columns, show="headings", selectmode="single", height=18)
+        self.tasks_tree = ttk.Treeview(table_wrap, columns=columns, show="headings", selectmode="browse", height=18)
         self.tasks_tree.heading("task_id", text="任务ID")
         self.tasks_tree.heading("account", text="账号")
         self.tasks_tree.heading("type", text="类型")
@@ -217,6 +222,9 @@ class TaskHistoryWindow:
 
     def _refresh_task_list(self) -> None:
         """刷新任务列表"""
+        if not hasattr(self, "tasks_tree"):
+            return
+
         # 清空当前列表
         for item in self.tasks_tree.get_children():
             self.tasks_tree.delete(item)
@@ -361,6 +369,8 @@ class TaskHistoryWindow:
 
     def _update_detail_panel(self, record: TaskRecord) -> None:
         """更新详情面板"""
+        if not hasattr(self, "detail_info"):
+            return
         self.detail_info.config(state=tk.NORMAL)
         self.detail_info.delete("1.0", tk.END)
 
@@ -422,6 +432,8 @@ class TaskHistoryWindow:
 
     def _clear_detail(self) -> None:
         """清空详情面板"""
+        if not hasattr(self, "detail_info") or not hasattr(self, "sku_tree"):
+            return
         self.detail_info.config(state=tk.NORMAL)
         self.detail_info.delete("1.0", tk.END)
         self.detail_info.insert(tk.END, "请从左侧选择一个任务查看详情")

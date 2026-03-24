@@ -367,13 +367,22 @@ class SessionService:
 
         session.playwright = sync_playwright().start()
         session.browser = session.playwright.chromium.launch(
-            headless=headless,
+            channel="chrome",   # 👈 关键
+            headless=False,
             slow_mo=slow_mo,
             args=[
                 "--disable-gpu",
                 "--start-maximized",
             ],
         )
+        # session.browser = session.playwright.chromium.launch(
+        #     headless=headless,
+        #     slow_mo=slow_mo,
+        #     args=[
+        #         "--disable-gpu",
+        #         "--start-maximized",
+        #     ],
+        # )
 
         if storage_state is None and os.path.exists(account.storage_path):
             storage_state = account.storage_path
@@ -441,23 +450,19 @@ class SessionService:
         session.mark_dead()
 
     def close_all_sessions(self):
-        """关闭所有会话。"""
+        """关闭所有会话，不阻塞调用线程"""
         with self._locks_guard:
-            # 先唤醒所有阻塞的 worker 线程，防止 event.wait() 无限等待
-            for worker in self._workers.values():
-                # 发送一个空任务来解除阻塞
+            email_list = list(self.sessions.keys())
+
+        # 在后台线程执行关闭操作，不等待完成
+        def close_all_async():
+            for email in email_list:
                 try:
-                    worker["queue"].put_nowait(None)
-                except Exception:
-                    pass
+                    self.close_session(email)
+                except Exception as e:
+                    self._logger(f"⚠️ 关闭会话失败: {email}, {e}")
 
-            emails = list(self.sessions.keys())
-
-        # 给 worker 线程一点时间响应
-        time.sleep(0.1)
-
-        for email in emails:
-            self.close_session(email)
+        threading.Thread(target=close_all_async, daemon=True).start()
 
     def close_session(self, email: str):
         """关闭指定邮箱的浏览器会话。"""
