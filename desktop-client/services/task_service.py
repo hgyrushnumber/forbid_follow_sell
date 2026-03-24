@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import threading
 import os
 import traceback
 import uuid
@@ -19,6 +20,7 @@ class TaskService:
         get_image_path: Callable[[], str],
         get_headless: Callable[[], bool],
         login_account: Callable,
+        accounts_lock: threading.RLock,
     ):
         self.accounts = accounts
         self.append_log = append_log
@@ -27,6 +29,7 @@ class TaskService:
         self.get_headless = get_headless
         self.login_account = login_account
         self.record_service = TaskRecordService()
+        self.accounts_lock = accounts_lock
 
     def run_task_on_accounts(self, skus: List[str], selected_accounts) -> None:
         """在选中的账号上执行本地手动任务"""

@@ -1191,62 +1191,154 @@ class PageService:
 
         return True
 
-    def click_menu_button(self, page, text: str, ru_text: Optional[str] = None, max_retries: int = 4):
-        candidates = []
+    def click_continue_complaint_button(self, page, timeout_ms: int = 10000) -> bool:
+        """点击“投诉其他商品”按钮，准备下一个投诉"""
+        from services.constants import RU_ANOTHER_PRODUCT_BUTTON
+
+        deadline = time.time() + timeout_ms / 1000
+        while time.time() < deadline:
+            try:
+                locator = page.get_by_text(RU_ANOTHER_PRODUCT_BUTTON, exact=True)
+                if locator.count() > 0 and locator.first.is_visible():
+                    locator.first.click(timeout=5000)
+                    self._logger(f"✅ 已点击按钮: {RU_ANOTHER_PRODUCT_BUTTON}")
+                    sleep(800)
+                    return True
+            except Exception:
+                pass
+
+            try:
+                locator = page.get_by_text(RU_ANOTHER_PRODUCT_BUTTON, exact=False)
+                if locator.count() > 0 and locator.first.is_visible():
+                    locator.first.click(timeout=5000)
+                    self._logger(f"✅ 已点击按钮: {RU_ANOTHER_PRODUCT_BUTTON}")
+                    sleep(800)
+                    return True
+            except Exception:
+                pass
+
+            try:
+                locator = page.get_by_role("button", name=RU_ANOTHER_PRODUCT_BUTTON)
+                if locator.count() > 0 and locator.first.is_visible():
+                    locator.first.click(timeout=5000)
+                    self._logger(f"✅ 已点击按钮(role): {RU_ANOTHER_PRODUCT_BUTTON}")
+                    sleep(800)
+                    return True
+            except Exception:
+                pass
+
+            sleep(500)
+
+        self._logger(f"⚠️ 未找到 {RU_ANOTHER_PRODUCT_BUTTON} 按钮")
+        return False
+
+    def click_menu_button(
+        self,
+        page,
+        text: str,
+        ru_text: Optional[str] = None,
+        max_retries: int = 4,
+        expected_next_texts: Optional[List[str]] = None,
+        require_input: bool = False,
+    ):
         if text:
             candidates.append(text)
         if ru_text:
             candidates.append(ru_text)
 
         if not candidates:
-            raise RuntimeError("菜单文本为空")
+            raise RuntimeError("菜单文本为空，无法执行菜单点击")
+
+        def _click_if_interactive(node, name: str, source: str) -> bool:
+            try:
+                if node.count() <= 0:
+                    return False
+                item = node.first
+                if not item.is_visible():
+                    return False
+                try:
+                    if item.is_disabled():
+                        return False
+                except Exception:
+                    pass
+                item.scroll_into_view_if_needed()
+                sleep(300)
+                item.click(timeout=5000)
+                sleep(2500)
+                self._logger(f"✅ 菜单点击成功({source}): {name}")
+                return True
+            except Exception:
+                return False
+
+        def _try_click_from_raw(raw, name: str, source: str) -> bool:
+            if _click_if_interactive(raw, name, source):
+                return True
+            ancestors = [
+                raw.locator("xpath=ancestor-or-self::*[@role='button'][1]"),
+                raw.locator("xpath=ancestor-or-self::button[1]"),
+                raw.locator("xpath=ancestor-or-self::a[1]"),
+            ]
+            for a in ancestors:
+                if _click_if_interactive(a, name, f"{source}-ancestor"):
+                    return True
+            return False
+
+        def _click_and_verify(raw, name: str, source: str) -> bool:
+            if not _try_click_from_raw(raw, name, source):
+                return False
+            progressed = self.wait_for_menu_or_input_progress(
+                page,
+                expected_next_texts=expected_next_texts,
+                timeout_ms=7000,
+                require_input=require_input,
+            )
+            if progressed:
+                return True
+            self._logger(f"⚠️ 菜单点击后未观测到下一步按钮或输入框，准备重试: {name}")
+            return False
 
         for attempt in range(1, max_retries + 1):
             self._logger(f"🎯 查找菜单：{text or ru_text}，第 {attempt}/{max_retries} 次")
 
-            # 1. role button
             for name in candidates:
                 try:
-                    loc = page.get_by_role("button", name=name)
-                    if loc.count() > 0 and loc.first.is_visible():
-                        loc.first.scroll_into_view_if_needed()
-                        sleep(300)
-                        loc.first.click(timeout=5000)
-                        sleep(2500)
-                        return True
-                except Exception:
-                    pass
-
-            # 2. 文本点击
-            for name in candidates:
-                try:
-                    loc = page.get_by_text(name, exact=False)
-                    count = loc.count()
+                    role_loc = page.get_by_role("button", name=name)
+                    count = role_loc.count()
                     for i in range(count):
-                        item = loc.nth(i)
-                        if item.is_visible():
-                            item.scroll_into_view_if_needed()
-                            sleep(300)
-                            item.click(timeout=5000)
-                            sleep(2500)
+                        if _click_and_verify(role_loc.nth(i), name, "role"):
                             return True
                 except Exception:
                     pass
 
-            # 3. XPath
+            for name in candidates:
+                try:
+                    exact_loc = page.get_by_text(name, exact=True)
+                    count = exact_loc.count()
+                    for i in range(count):
+                        if _click_and_verify(exact_loc.nth(i), name, "text-exact"):
+                            return True
+                except Exception:
+                    pass
+
+            for name in candidates:
+                try:
+                    fuzzy_loc = page.get_by_text(name, exact=False)
+                    count = fuzzy_loc.count()
+                    for i in range(count):
+                        if _click_and_verify(fuzzy_loc.nth(i), name, "text-fuzzy"):
+                            return True
+                except Exception:
+                    pass
+
             selectors = build_text_xpaths(text, ru_text)
             target = find_visible_by_xpaths(page, selectors, timeout_ms=3000)
             if target:
                 try:
-                    target.scroll_into_view_if_needed()
-                    sleep(300)
-                    target.click(timeout=5000)
-                    sleep(2500)
-                    return True
-                except Exception as e:
-                    self._logger(f"⚠️ XPath 点击菜单失败：{text or ru_text}，原因：{e}")
+                    if _click_and_verify(target, text or ru_text, "xpath"):
+                        return True
+                except Exception:
+                    pass
 
-            # 4. 尝试滚动
             try:
                 page.mouse.wheel(0, 1000)
             except Exception:

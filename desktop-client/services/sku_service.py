@@ -4,7 +4,7 @@
 import time
 import datetime
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 from services.page_service import PageService
 from services.utils import sleep
@@ -141,6 +141,59 @@ class SkuService:
 
         return "zh"  # 默认中文
 
+    def _is_menu_text_visible(self, page, text: str) -> bool:
+        value = (text or "").strip()
+        if not value:
+            return False
+
+        try:
+            role_loc = page.get_by_role("button", name=value)
+            if role_loc.count() > 0 and role_loc.first.is_visible():
+                return True
+        except Exception:
+            pass
+
+        try:
+            text_loc = page.get_by_text(value, exact=False)
+            count = text_loc.count()
+            for i in range(count):
+                if text_loc.nth(i).is_visible():
+                    return True
+        except Exception:
+            pass
+
+        return False
+
+    def _detect_language_by_menu(self, page, menu_config: list) -> Tuple[Optional[str], int, int]:
+        zh_hits = 0
+        ru_hits = 0
+
+        for item in menu_config or []:
+            zh_text = (item.get("text") or "").strip()
+            ru_text = (item.get("ru_text") or "").strip()
+
+            if zh_text and self._is_menu_text_visible(page, zh_text):
+                zh_hits += 1
+            if ru_text and self._is_menu_text_visible(page, ru_text):
+                ru_hits += 1
+
+        if zh_hits == 0 and ru_hits == 0:
+            return None, zh_hits, ru_hits
+
+        if ru_hits > zh_hits:
+            return "ru", zh_hits, ru_hits
+        if zh_hits > ru_hits:
+            return "zh", zh_hits, ru_hits
+
+        # 平局兜底：命中仅俄文第4步（中文为空）时判定为 ru
+        for item in menu_config or []:
+            zh_text = (item.get("text") or "").strip()
+            ru_text = (item.get("ru_text") or "").strip()
+            if (not zh_text) and ru_text and self._is_menu_text_visible(page, ru_text):
+                return "ru", zh_hits, ru_hits
+
+        return None, zh_hits, ru_hits
+
     def _filter_menu_by_language(self, menu_config: list, lang: str) -> list:
         """根据语言过滤菜单项。"""
         filtered = []
@@ -169,9 +222,14 @@ class SkuService:
             self.page_service.normalize_messenger_home(page, TARGET_URL)
             self._logger("ℹ️ 当前尚未进入投诉会话页，将按菜单路径首次进入目标会话")
 
-        # 检测语言并过滤菜单
-        lang = self._detect_language(page)
-        self._logger(f"ℹ️ 检测到页面语言: {lang}")
+        # 检测语言并过滤菜单：优先用可见菜单文本，兜底回退 cookie/正文判断
+        lang_by_menu, zh_hits, ru_hits = self._detect_language_by_menu(page, menu_config)
+        if lang_by_menu:
+            lang = lang_by_menu
+            self._logger(f"ℹ️ 语言判定(菜单命中): {lang}, zh_hits={zh_hits}, ru_hits={ru_hits}")
+        else:
+            lang = self._detect_language(page)
+            self._logger(f"ℹ️ 语言判定(cookie/正文回退): {lang}, zh_hits={zh_hits}, ru_hits={ru_hits}")
         filtered_menu = self._filter_menu_by_language(menu_config, lang)
 
         for idx, item in enumerate(filtered_menu, 1):
@@ -183,7 +241,23 @@ class SkuService:
                 continue
 
             self._logger(f"🎯 菜单导航 {idx}/{len(filtered_menu)}: {text or ru_text}")
-            self.page_service.click_menu_button(page, text or ru_text, ru_text or None)
+            next_labels: List[str] = []
+            if idx < len(filtered_menu):
+                next_item = filtered_menu[idx]
+                next_text = (next_item.get("text") or "").strip()
+                next_ru_text = (next_item.get("ru_text") or "").strip()
+                if next_text:
+                    next_labels.append(next_text)
+                if next_ru_text and next_ru_text not in next_labels:
+                    next_labels.append(next_ru_text)
+
+            self.page_service.click_menu_button(
+                page,
+                text or ru_text,
+                ru_text or None,
+                expected_next_texts=next_labels,
+                require_input=(idx == len(filtered_menu)),
+            )
 
         resolved_session_id = session_id or self._wait_chat_session_id(page, timeout_ms=15000)
         if resolved_session_id:
@@ -228,6 +302,7 @@ class SkuService:
                 screenshot_path = self._wait_for_sku_verification_ru(page, sku)
                 result.verification_screenshot = screenshot_path or ""
                 if screenshot_path:
+                    self.page_service.click_continue_complaint_button(page)
                     result.stage = "finish"
                     result.success = True
                     result.message = "验证成功"

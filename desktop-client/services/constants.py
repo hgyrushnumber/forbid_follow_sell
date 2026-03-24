@@ -45,6 +45,9 @@ RU_SKU_VERIFICATION_TEXT = "Скрыли товар"
 # 俄文 SKU 验证等待超时时间（秒）
 RU_SKU_VERIFICATION_TIMEOUT = 30
 
+# 俄文“投诉其他商品”按钮文本
+RU_ANOTHER_PRODUCT_BUTTON = "Пожаловаться на другой товар"
+
 # 中文语言代码
 ZH_LANGUAGE_CODE = "zh"
 

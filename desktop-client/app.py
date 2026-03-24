@@ -36,6 +36,7 @@ class OzonMultiApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.accounts: List[AccountInfo] = []
+        self.accounts_lock = threading.RLock()
         self.client_id = resolve_client_id()
         self._heartbeat_stop = threading.Event()
         self._shutdown_started = False
@@ -67,6 +68,7 @@ class OzonMultiApp:
             save_accounts_config=self.save_accounts_config,
             get_headless=self.ui.is_headless,
             sync_dispatch_status_once=self.sync_dispatch_status_once,
+            accounts_lock=self.accounts_lock,
         )
         self.task_service = TaskService(
             accounts=self.accounts,
@@ -75,6 +77,7 @@ class OzonMultiApp:
             get_image_path=self.ui.get_image_path,
             get_headless=self.ui.is_headless,
             login_account=self.account_service.login_account_thread,
+            accounts_lock=self.accounts_lock,
         )
         set_logger(self.append_log)
 
