@@ -8,10 +8,9 @@
 import os
 import threading
 import tkinter as tk
-from datetime import datetime
-
+import logging
+from logging.handlers import TimedRotatingFileHandler
 from typing import List, Optional
-
 from dotenv import load_dotenv
 
 from models import AccountInfo
@@ -23,11 +22,12 @@ from services.client_identity import resolve_client_id
 from ui.main_window import MainWindow
 from ui.task_history_window import TaskHistoryWindow
 from ozon_core import close_all_sessions, set_logger
+from config import get_dispatch_server, get_execution_mode, is_dispatch_enabled
 
 # 加载.env配置文件
 load_dotenv()
 
-DISPATCH_SERVER = os.environ.get("DISPATCH_SERVER", "https://www.rus2cn.com")
+DISPATCH_SERVER = get_dispatch_server()
 
 
 class OzonMultiApp:
@@ -40,7 +40,16 @@ class OzonMultiApp:
         self.client_id = resolve_client_id()
         self._heartbeat_stop = threading.Event()
         self._shutdown_started = False
+        self._dispatch_enabled = is_dispatch_enabled()
         self.log_file = os.environ.get("DESKTOP_LOG_FILE", os.path.join("logs", "desktop-client.log"))
+        log_dir = os.path.dirname(self.log_file) or "."
+        os.makedirs(log_dir, exist_ok=True)
+        self.logger = logging.getLogger("desktop-client")
+        self.logger.setLevel(logging.INFO)
+        handler = TimedRotatingFileHandler(self.log_file, when="H", interval=1, backupCount=24, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
+        self.logger.handlers.clear()
+        self.logger.addHandler(handler)
 
         self.config_service = ConfigService()
 
@@ -57,8 +66,13 @@ class OzonMultiApp:
             on_account_select=self.on_account_select,
         )
 
-        self.dispatch_service = DispatchService(self.append_log)
-        self.dispatch_service.set_client_id(self.client_id)
+        if self._dispatch_enabled:
+            self.dispatch_service = DispatchService(self.append_log)
+            self.dispatch_service.set_client_id(self.client_id)
+        else:
+            self.dispatch_service = None
+
+        dispatch_sync_callback = self.sync_dispatch_status_once if self._dispatch_enabled else lambda: None
 
         self.account_service = AccountService(
             root=self.root,
@@ -67,13 +81,15 @@ class OzonMultiApp:
             update_accounts_list=self.update_accounts_list,
             save_accounts_config=self.save_accounts_config,
             get_headless=self.ui.is_headless,
-            sync_dispatch_status_once=self.sync_dispatch_status_once,
+            sync_dispatch_status_once=dispatch_sync_callback,
             accounts_lock=self.accounts_lock,
+            dispatch_enabled=self._dispatch_enabled,
         )
         self.task_service = TaskService(
             accounts=self.accounts,
             append_log=self.append_log,
             dispatch_service=self.dispatch_service,
+            dispatch_enabled=self._dispatch_enabled,
             get_image_path=self.ui.get_image_path,
             get_headless=self.ui.is_headless,
             login_account=self.account_service.login_account_thread,
@@ -82,32 +98,29 @@ class OzonMultiApp:
         set_logger(self.append_log)
 
         self.append_log("🚀 程序初始化开始")
+        mode_str = "local" if get_execution_mode().value == "local" else "remote"
+        self.append_log(f"[config] execution_mode={mode_str}, dispatch={'enabled' if self._dispatch_enabled else 'disabled'}")
         self.append_log("📂 加载账号配置")
         self.load_accounts_config()
         self.append_log("🔄 更新账号列表")
         self.update_accounts_list()
         if not self.ui.ensure_image_exists():
             self.append_log("⚠️ 启动检查：当前图片文件不可用，请先重新选择图片")
-        self.append_log("💓 启动分派心跳循环")
-        self.start_dispatch_heartbeat()
-        self.append_log("📋 启动任务轮询循环")
-        threading.Thread(target=self.task_polling_loop, daemon=True).start()
+
+        if self._dispatch_enabled:
+            self.append_log("💓 启动分派心跳循环")
+            self.start_dispatch_heartbeat()
+            self.append_log("📋 启动任务轮询循环")
+            threading.Thread(target=self.task_polling_loop, daemon=True).start()
+        else:
+            self.append_log("ℹ️ 分派服务已禁用，跳过心跳与任务轮询")
+
         self.append_log("✅ 程序初始化完成")
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def append_log(self, msg: str) -> None:
-        line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
-        try:
-            os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
-            with open(self.log_file, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        except Exception:
-            pass
-        try:
-            self.root.after(0, lambda text=line: self.ui.append_log(text))
-        except Exception:
-            pass
+        self.logger.info(msg)
 
     def load_accounts_config(self) -> None:
         self.accounts.clear()
@@ -181,6 +194,8 @@ class OzonMultiApp:
         return [a.email for a in self.accounts if a.login_status == "已登录" and a.validate()]
 
     def sync_dispatch_status_once(self) -> None:
+        if not self._dispatch_enabled or not self.dispatch_service:
+            return
         self.dispatch_service.sync_status_once(self._logged_in_accounts())
 
     def dispatch_heartbeat_loop(self) -> None:
@@ -199,9 +214,13 @@ class OzonMultiApp:
         threading.Thread(target=self.dispatch_heartbeat_loop, daemon=True).start()
 
     def pull_task_from_dispatch(self) -> Optional[dict]:
+        if not self._dispatch_enabled or not self.dispatch_service:
+            return None
         return self.dispatch_service.pull_task()
 
     def task_polling_loop(self) -> None:
+        if not self._dispatch_enabled:
+            return
         self.append_log("🚀 启动任务轮询循环")
         while not self._heartbeat_stop.is_set():
             try:
@@ -279,10 +298,11 @@ class OzonMultiApp:
                 self._heartbeat_stop.set()
                 self.append_log("🛑 收到退出请求，开始后台清理资源")
 
-                try:
-                    self.dispatch_service.mark_client_offline()
-                except Exception as exc:
-                    self.append_log(f"⚠️ 标记客户端离线失败，将继续关闭本地会话: {exc}")
+                if self._dispatch_enabled and self.dispatch_service:
+                    try:
+                        self.dispatch_service.mark_client_offline()
+                    except Exception as exc:
+                        self.append_log(f"⚠️ 标记客户端离线失败，将继续关闭本地会话: {exc}")
 
                 try:
                     close_all_sessions()

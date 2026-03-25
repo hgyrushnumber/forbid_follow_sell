@@ -6,7 +6,8 @@ datas = [
     ('accounts', 'accounts'),
     ('accounts_config.json', '.'),
     ('ozon_accounts_config.json', '.'),
-    ('ozon_auth.json', '.')
+    ('ozon_auth.json', '.'),
+    ('.env', '.'),
 ]
 datas += collect_data_files('playwright_stealth')
 

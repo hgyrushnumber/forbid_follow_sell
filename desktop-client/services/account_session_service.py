@@ -92,50 +92,62 @@ class AccountSessionService:
 
             # 严格校验登录状态
             try:
-                # 导航到目标页面
                 primary_page.goto(self._target_url, wait_until="domcontentloaded", timeout=60000)
-                self._sleep(3000)
+                self._sleep(3)
 
-                # 等待页面跳转到目标URL模式
-                try:
-                    # 先等待dashboard页面
-                    primary_page.wait_for_url("**/app/dashboard**", wait_until="load", timeout=30000)
-                except Exception:
-                    try:
-                        # 再等待messenger页面
-                        primary_page.wait_for_url("**/app/messenger**", wait_until="load", timeout=30000)
-                    except Exception:
-                        self._logger("⚠️ 页面未跳转到预期的URL模式（/app/dashboard 或 /app/messenger）")
-                self._sleep(3000)
-
-                if self.is_account_logged_in(primary_page):
-                    self._logger("✅ 会话已登录并就绪")
+                status, session_id = self._page_service.wait_for_session_or_signin(primary_page)
+                if status == "session_ready":
+                    self._logger("✅ 目标页已进入会话，跳过登录")
+                    if session_id:
+                        self._mark_support_task_page(session, primary_page, session_id=session_id)
                     self._page_service.normalize_messenger_home(primary_page, self._target_url)
                     session.touch()
                     return session
-                else:
-                    self._logger("⚠️ 检测到未登录页面，将启动登录流程")
-                    # 清理失效的登录态文件
+                if status == "requires_login":
+                    self._logger("⚠️ 页面进入登录流程，准备恢复登录")
                     if os.path.exists(account.storage_path):
                         os.remove(account.storage_path)
-
+                    self._page_service.ensure_logged_in_and_ready(
+                        primary_page,
+                        session.context,
+                        account,
+                        self._target_url,
+                    )
+                    self._save_login_state(session.context, account.storage_path)
+                    self._page_service.normalize_messenger_home(primary_page, self._target_url)
+                    session.touch()
+                    self._logger("✅ 登录流程完成，会话已就绪")
+                    return session
+                else:
+                    self._logger("⚠️ URL 监控超时或未检测到有效状态，继续原有登录流程")
+                    if os.path.exists(account.storage_path):
+                        os.remove(account.storage_path)
+                    self._page_service.ensure_logged_in_and_ready(
+                        primary_page,
+                        session.context,
+                        account,
+                        self._target_url,
+                    )
+                    self._save_login_state(session.context, account.storage_path)
+                    self._page_service.normalize_messenger_home(primary_page, self._target_url)
+                    session.touch()
+                    self._logger("✅ 登录流程完成（timeout 分支），会话已就绪")
+                    return session
             except Exception as e:
                 self._logger(f"⚠️ 页面导航或状态检测失败: {e}")
-
-            # 无效登录态，启动完整登录流程
-            self._logger("🔄 启动完整登录流程")
-            self._page_service.ensure_logged_in_and_ready(
-                primary_page,
-                session.context,
-                account,
-                self._target_url,
-            )
-            self._save_login_state(session.context, account.storage_path)
-            self._page_service.normalize_messenger_home(primary_page, self._target_url)
-
-            session.touch()
-            self._logger("✅ 登录流程完成，会话已就绪")
-            return session
+                if os.path.exists(account.storage_path):
+                    os.remove(account.storage_path)
+                self._page_service.ensure_logged_in_and_ready(
+                    primary_page,
+                    session.context,
+                    account,
+                    self._target_url,
+                )
+                self._save_login_state(session.context, account.storage_path)
+                self._page_service.normalize_messenger_home(primary_page, self._target_url)
+                session.touch()
+                self._logger("✅ 登录流程完成（异常分支），会话已就绪")
+                return session
 
         return self._session_service.run_serialized(account.email, "准备账号会话", _prepare)
 
@@ -298,7 +310,7 @@ class AccountSessionService:
                 make_primary=False,
             )
             task_page.goto(self._target_url, wait_until="domcontentloaded", timeout=60000)
-            self._sleep(3000)
+            self._sleep(3)
             self._logger(f"🪟 新任务标签页已就绪: {task_page.url}")
             return session, task_page
 

@@ -164,35 +164,18 @@ class SkuService:
 
         return False
 
-    def _detect_language_by_menu(self, page, menu_config: list) -> Tuple[Optional[str], int, int]:
-        zh_hits = 0
-        ru_hits = 0
-
+    def _detect_language_by_menu(self, page, menu_config: list) -> Optional[str]:
+        """根据菜单按钮直接判断语言并返回。"""
         for item in menu_config or []:
             zh_text = (item.get("text") or "").strip()
             ru_text = (item.get("ru_text") or "").strip()
 
             if zh_text and self._is_menu_text_visible(page, zh_text):
-                zh_hits += 1
+                return "zh"
             if ru_text and self._is_menu_text_visible(page, ru_text):
-                ru_hits += 1
+                return "ru"
 
-        if zh_hits == 0 and ru_hits == 0:
-            return None, zh_hits, ru_hits
-
-        if ru_hits > zh_hits:
-            return "ru", zh_hits, ru_hits
-        if zh_hits > ru_hits:
-            return "zh", zh_hits, ru_hits
-
-        # 平局兜底：命中仅俄文第4步（中文为空）时判定为 ru
-        for item in menu_config or []:
-            zh_text = (item.get("text") or "").strip()
-            ru_text = (item.get("ru_text") or "").strip()
-            if (not zh_text) and ru_text and self._is_menu_text_visible(page, ru_text):
-                return "ru", zh_hits, ru_hits
-
-        return None, zh_hits, ru_hits
+        return None
 
     def _filter_menu_by_language(self, menu_config: list, lang: str) -> list:
         """根据语言过滤菜单项。"""
@@ -223,13 +206,13 @@ class SkuService:
             self._logger("ℹ️ 当前尚未进入投诉会话页，将按菜单路径首次进入目标会话")
 
         # 检测语言并过滤菜单：优先用可见菜单文本，兜底回退 cookie/正文判断
-        lang_by_menu, zh_hits, ru_hits = self._detect_language_by_menu(page, menu_config)
+        lang_by_menu = self._detect_language_by_menu(page, menu_config)
         if lang_by_menu:
             lang = lang_by_menu
-            self._logger(f"ℹ️ 语言判定(菜单命中): {lang}, zh_hits={zh_hits}, ru_hits={ru_hits}")
+            self._logger(f"ℹ️ 语言判定(菜单命中): {lang}")
         else:
             lang = self._detect_language(page)
-            self._logger(f"ℹ️ 语言判定(cookie/正文回退): {lang}, zh_hits={zh_hits}, ru_hits={ru_hits}")
+            self._logger(f"ℹ️ 语言判定(cookie/正文回退): {lang}")
         filtered_menu = self._filter_menu_by_language(menu_config, lang)
 
         for idx, item in enumerate(filtered_menu, 1):

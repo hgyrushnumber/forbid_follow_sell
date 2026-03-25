@@ -20,6 +20,7 @@ class AccountService:
         get_headless: Callable[[], bool],
         sync_dispatch_status_once: Callable[[], None],
         accounts_lock: threading.RLock,
+        dispatch_enabled: bool,
     ):
         self.root = root
         self.accounts = accounts
@@ -29,6 +30,7 @@ class AccountService:
         self.get_headless = get_headless
         self.sync_dispatch_status_once = sync_dispatch_status_once
         self.accounts_lock = accounts_lock
+        self._dispatch_enabled = dispatch_enabled
 
     def _get_account_by_index(self, index: int) -> Optional[AccountInfo]:
         with self.accounts_lock:

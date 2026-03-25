@@ -40,7 +40,7 @@ DEFAULT_RETRY_COUNT = 3
 DEFAULT_TIMEOUT = 30
 
 # 俄文 SKU 验证提示文本
-RU_SKU_VERIFICATION_TEXT = "Скрыли товар"
+RU_SKU_VERIFICATION_TEXT = "Чтобы мы могли отправить на проверку товар"
 
 # 俄文 SKU 验证等待超时时间（秒）
 RU_SKU_VERIFICATION_TIMEOUT = 30

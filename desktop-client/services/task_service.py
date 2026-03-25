@@ -21,6 +21,7 @@ class TaskService:
         get_headless: Callable[[], bool],
         login_account: Callable,
         accounts_lock: threading.RLock,
+        dispatch_enabled: bool,
     ):
         self.accounts = accounts
         self.append_log = append_log
@@ -30,6 +31,7 @@ class TaskService:
         self.login_account = login_account
         self.record_service = TaskRecordService()
         self.accounts_lock = accounts_lock
+        self._dispatch_enabled = dispatch_enabled
 
     def run_task_on_accounts(self, skus: List[str], selected_accounts) -> None:
         """在选中的账号上执行本地手动任务"""

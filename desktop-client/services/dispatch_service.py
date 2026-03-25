@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
 import json
 import urllib.request
 from typing import List, Optional
 
-DISPATCH_SERVER = os.environ.get("DISPATCH_SERVER", "https://www.rus2cn.com")
+from config import get_dispatch_server
+
 HEARTBEAT_INTERVAL = 15
 
 
@@ -14,6 +14,7 @@ class DispatchService:
     def __init__(self, logger_func):
         self._logger = logger_func
         self.client_id = None
+        self._dispatch_server = get_dispatch_server()
 
     def set_client_id(self, client_id: str):
         self.client_id = client_id
@@ -21,35 +22,35 @@ class DispatchService:
     def _dispatch_get(self, path: str) -> dict:
         try:
             req = urllib.request.Request(
-                DISPATCH_SERVER + path,
+                self._dispatch_server + path,
                 method="GET",
                 headers={"Content-Type": "application/json"},
             )
-            self._logger(f"🔍 发送GET请求到 {DISPATCH_SERVER}{path}")
+            # self._logger(f"🔍 发送GET请求到 {self._dispatch_server}{path}")
             with urllib.request.urlopen(req, timeout=8) as r:
                 response_data = json.loads(r.read().decode("utf-8"))
-                self._logger(f"✅ 收到来自 {DISPATCH_SERVER}{path} 的响应: {json.dumps(response_data, ensure_ascii=False)}")
+                # self._logger(f"✅ 收到来自 {self._dispatch_server}{path} 的响应: {json.dumps(response_data, ensure_ascii=False)}")
                 return response_data
         except Exception as e:
-            self._logger(f"❌ GET请求 {DISPATCH_SERVER}{path} 失败: {str(e)}")
+            self._logger(f"❌ GET请求 {self._dispatch_server}{path} 失败: {str(e)}")
             raise
 
     def _dispatch_post(self, path: str, payload: dict) -> dict:
         try:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             req = urllib.request.Request(
-                DISPATCH_SERVER + path,
+                self._dispatch_server + path,
                 data=body,
                 method="POST",
                 headers={"Content-Type": "application/json"},
             )
-            self._logger(f"🔌 发送POST请求到 {DISPATCH_SERVER}{path}, 载荷: {json.dumps(payload, ensure_ascii=False)}")
+            # self._logger(f"🔌 发送POST请求到 {self._dispatch_server}{path}, 载荷: {json.dumps(payload, ensure_ascii=False)}")
             with urllib.request.urlopen(req, timeout=8) as r:
                 response_data = json.loads(r.read().decode("utf-8"))
-                self._logger(f"✅ 收到来自 {DISPATCH_SERVER}{path} 的响应: {json.dumps(response_data, ensure_ascii=False)}")
+                # self._logger(f"✅ 收到来自 {self._dispatch_server}{path} 的响应: {json.dumps(response_data, ensure_ascii=False)}")
                 return response_data
         except Exception as e:
-            self._logger(f"❌ POST请求 {DISPATCH_SERVER}{path} 失败: {str(e)}")
+            self._logger(f"❌ POST请求 {self._dispatch_server}{path} 失败: {str(e)}")
             raise
 
     def pull_task(self) -> Optional[dict]:
@@ -73,16 +74,16 @@ class DispatchService:
             raise RuntimeError("Client ID not set")
 
         try:
-            self._logger(f"🔍 同步分派状态，当前在线账号数: {len(accounts)}")
+            # self._logger(f"🔍 同步分派状态，当前在线账号数: {len(accounts)}")
 
             if not accounts:
                 self._logger("⚠️ 没有登录的账号，跳过注册和心跳")
                 return
 
-            self._logger(f"📝 注册客户端 {self.client_id}，账号列表: {accounts}")
+            # self._logger(f"📝 注册客户端 {self.client_id}，账号列表: {accounts}")
             self._dispatch_post("/api/clients/register", {"client_id": self.client_id, "accounts": accounts})
 
-            self._logger(f"💓 发送心跳给分派服务，客户端ID: {self.client_id}")
+            # self._logger(f"💓 发送心跳给分派服务，客户端ID: {self.client_id}")
             self._dispatch_post("/api/clients/heartbeat", {"client_id": self.client_id, "accounts": accounts})
 
             self._logger("✅ 分派状态同步完成")

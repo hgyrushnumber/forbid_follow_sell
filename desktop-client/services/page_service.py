@@ -1,7 +1,8 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import time
+import re
 from urllib.parse import parse_qs, urlparse
 from typing import List, Optional
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -266,6 +267,50 @@ class PageService:
             sleep(300)
         return False
 
+    def wait_for_session_or_signin(self, page, timeout_ms: int = 100000):
+        """
+        监控页面 URL 变化，判断是否已登录或需要登录。
+
+        返回:
+            tuple: (status: str, session_id: Optional[str])
+                - status: "session_ready" | "requires_login" | "timeout"
+                - session_id: 如果检测到 session_id 则返回，否则为 None
+        """
+        signin_pattern = re.compile(r"^https://seller\.ozon\.ru/app/registration/signin")
+        deadline = time.time() + timeout_ms / 1000
+        last_url = ""
+
+        while time.time() < deadline:
+            try:
+                current_url = page.url or ""
+            except Exception:
+                current_url = ""
+
+            if current_url and current_url != last_url:
+                self._logger(f"🔍 URL 变化: {current_url}")
+                last_url = current_url
+
+            self._logger(f"[DEBUG] current_url={repr(current_url)}")
+            self._logger(f"[DEBUG] signin_match={bool(signin_pattern.match(current_url))}")
+
+            if current_url.startswith("https://seller.ozon.ru/app/registration/signin"):
+                self._logger(f"🔑 检测到登录页面: {current_url}")
+                return "requires_login", None
+
+            session_id = self.extract_session_id(current_url)
+            if session_id:
+                self._logger(f"✅ 检测到 session_id: {session_id}")
+                return "session_ready", session_id
+
+            page.wait_for_timeout(1000)
+
+        try:
+            current_url = page.url or ""
+        except Exception:
+            current_url = ""
+        self._logger(f"⏰ URL 监控超时，当前 URL: {current_url}")
+        return "timeout", None
+
     # 公司选择页处理
     def click_next_button(self, page, timeout_ms=10000):
         candidate_texts = ["下一步", "Далее", "Next"]
@@ -420,7 +465,7 @@ class PageService:
         except Exception:
             pass
 
-        sleep(3000)
+        sleep(3)
         from services.utils import dump_page_state
         dump_page_state(page, "company_select_after")
         return True
@@ -779,7 +824,7 @@ class PageService:
                 else:
                     sid = self.extract_session_id(current_url)
                     self._logger(f"ℹ️ 保留聊天会话 {sid}，跳过跳转到 TARGET_URL")
-                sleep(3000)
+                sleep(3)
             except Exception:
                 pass
 
@@ -795,6 +840,24 @@ class PageService:
     def login_with_email_otp(self, page, context, account, TARGET_URL):
         self._logger(f"开始标准化登录流程: {account.email}")
         self._logger("登录流程规范: 打开登录页 -> 点击登录 -> 通过邮箱登录 -> 输入邮箱 -> 手动输入验证码 -> 校验是否进入 messenger")
+
+        try:
+            page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+        except Exception as exc:
+            self._logger(f"⚠️ 登录流程初始化：打开目标页失败: {exc}")
+        sleep(3)
+
+        status, session_id = self.wait_for_session_or_signin(page)
+        if status == "session_ready":
+            self._logger("✅ 已确认会话准备完成，无需再次登录")
+            if session_id:
+                self._logger(f"ℹ️ 当前 session_id={session_id}，跳过登录流程")
+            self.normalize_messenger_home(page, TARGET_URL)
+            return True
+        if status == "requires_login":
+            self._logger("ℹ️ helper 检测到登录页，继续执行邮件+OTP 登录")
+        else:
+            self._logger("⚠️ helper 未检测到登录或已登录状态，继续 fallback 登录流程")
 
         current_type = self.detect_page_type(page)
         self._logger(f"登录流程起始页面类型: {current_type}")
@@ -847,7 +910,7 @@ class PageService:
 
     def ensure_logged_in_and_ready(self, page, context, account, TARGET_URL):
         self._logger(f"🌐 登录后检查页面: {page.url}")
-        sleep(3000)
+        sleep(3)
 
         page_type = self.detect_page_type(page)
         self._logger(f"当前页面类型: {page_type}")
@@ -872,7 +935,7 @@ class PageService:
                 else:
                     sid = self.extract_session_id(current_url)
                     self._logger(f"ℹ️ 保留聊天会话 {sid}，跳过跳转到 TARGET_URL")
-                sleep(3000)
+                sleep(3)
             except Exception:
                 pass
 
@@ -906,7 +969,7 @@ class PageService:
                 else:
                     sid = self.extract_session_id(current_url)
                     self._logger(f"ℹ️ 保留聊天会话 {sid}，跳过跳转到 TARGET_URL")
-                sleep(3000)
+                sleep(3)
             except Exception:
                 pass
 
@@ -928,7 +991,7 @@ class PageService:
                 else:
                     sid = self.extract_session_id(current_url)
                     self._logger(f"ℹ️ 保留聊天会话 {sid}，跳过跳转到 TARGET_URL")
-                sleep(3000)
+                sleep(3)
             except Exception:
                 pass
 
@@ -954,7 +1017,7 @@ class PageService:
                     else:
                         sid = self.extract_session_id(current_url)
                         self._logger(f"ℹ️ 保留聊天会话 {sid}，跳过跳转到 TARGET_URL")
-                    sleep(3000)
+                    sleep(3)
                 except Exception:
                     pass
                 if self.is_messenger_page(page):
@@ -1241,6 +1304,7 @@ class PageService:
         expected_next_texts: Optional[List[str]] = None,
         require_input: bool = False,
     ):
+        candidates: List[str] = []
         if text:
             candidates.append(text)
         if ru_text:
@@ -1267,7 +1331,8 @@ class PageService:
                 sleep(2500)
                 self._logger(f"✅ 菜单点击成功({source}): {name}")
                 return True
-            except Exception:
+            except Exception as e:
+                self._logger(f"❌ 点击失败({source}): {name}, error={e}")
                 return False
 
         def _try_click_from_raw(raw, name: str, source: str) -> bool:
@@ -1284,18 +1349,7 @@ class PageService:
             return False
 
         def _click_and_verify(raw, name: str, source: str) -> bool:
-            if not _try_click_from_raw(raw, name, source):
-                return False
-            progressed = self.wait_for_menu_or_input_progress(
-                page,
-                expected_next_texts=expected_next_texts,
-                timeout_ms=7000,
-                require_input=require_input,
-            )
-            if progressed:
-                return True
-            self._logger(f"⚠️ 菜单点击后未观测到下一步按钮或输入框，准备重试: {name}")
-            return False
+            return _try_click_from_raw(raw, name, source)
 
         for attempt in range(1, max_retries + 1):
             self._logger(f"🎯 查找菜单：{text or ru_text}，第 {attempt}/{max_retries} 次")
